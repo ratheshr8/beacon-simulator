@@ -89,12 +89,8 @@ object IBeaconPacket {
             }
             i += len + 1
         }
-        // Fallback: search for 02 15 marker anywhere
-        for (idx in 0 until raw.size - 22) {
-            if (raw[idx] == IBEACON_TYPE && raw[idx + 1] == IBEACON_LENGTH) {
-                parseAt(raw, idx)?.let { return it }
-            }
-        }
+        // Do not scan for bare 02 15 anywhere — that creates many false "iBeacons"
+        // from unrelated manufacturer payloads.
         return null
     }
 

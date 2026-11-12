@@ -8,6 +8,7 @@ import com.ratheshr8.beaconsimulator.ble.AdvertiseConfig
 import com.ratheshr8.beaconsimulator.ble.AdvertiseResult
 import com.ratheshr8.beaconsimulator.ble.BeaconAdvertiser
 import com.ratheshr8.beaconsimulator.ble.BeaconScanner
+import com.ratheshr8.beaconsimulator.ble.DeviceNameStore
 import com.ratheshr8.beaconsimulator.ble.IBeaconPacket
 import com.ratheshr8.beaconsimulator.ble.NearbyBleDevice
 import com.ratheshr8.beaconsimulator.ble.ScanFilterConfig
@@ -58,7 +59,11 @@ data class UiState(
     val scannedBeacons: List<ScannedBeacon> = emptyList(),
     val nearbyBleDevices: List<NearbyBleDevice> = emptyList(),
     val scanStats: ScanStats = ScanStats(),
-    val showAllBleDevices: Boolean = true,
+    val showAllBleDevices: Boolean = false,
+    val filtersExpanded: Boolean = false,
+    val deviceNames: Map<String, String> = emptyMap(),
+    val renameTargetKey: String? = null,
+    val renameDraft: String = "",
     val webhookUrl: String = "",
     val forwardEnabled: Boolean = false,
     val lastForwardStatus: String? = null,
@@ -82,6 +87,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     private val scanner = BeaconScanner(application)
     private val forwarder = BeaconForwarder()
     private val floorPlanStore = FloorPlanStore(application)
+    private val deviceNameStore = DeviceNameStore(application)
     private var forwardJob: Job? = null
 
     private val _state = MutableStateFlow(
@@ -89,6 +95,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             advertisingSupported = advertiser.isAdvertisingSupported(),
             bluetoothEnabled = advertiser.isBluetoothEnabled(),
             locationEnabled = BlePermissions.isLocationEnabled(application),
+            deviceNames = deviceNameStore.loadAll(),
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -128,6 +135,53 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateShowAllBleDevices(show: Boolean) {
         _state.update { it.copy(showAllBleDevices = show) }
+    }
+
+    fun updateFiltersExpanded(expanded: Boolean) {
+        _state.update { it.copy(filtersExpanded = expanded) }
+    }
+
+    fun beginRenameBeacon(uuid: UUID, major: Int, minor: Int, currentName: String) {
+        val key = DeviceNameStore.keyFor(uuid, major, minor)
+        _state.update {
+            it.copy(
+                renameTargetKey = key,
+                renameDraft = currentName,
+            )
+        }
+    }
+
+    fun updateRenameDraft(value: String) {
+        _state.update { it.copy(renameDraft = value) }
+    }
+
+    fun cancelRenameBeacon() {
+        _state.update { it.copy(renameTargetKey = null, renameDraft = "") }
+    }
+
+    fun confirmRenameBeacon() {
+        val key = _state.value.renameTargetKey ?: return
+        val name = _state.value.renameDraft.trim()
+        val updated = _state.value.deviceNames.toMutableMap()
+        if (name.isEmpty()) {
+            updated.remove(key)
+        } else {
+            updated[key] = name
+        }
+        deviceNameStore.saveAll(updated)
+        _state.update {
+            it.copy(
+                deviceNames = updated,
+                renameTargetKey = null,
+                renameDraft = "",
+            )
+        }
+    }
+
+    fun displayNameFor(beacon: ScannedBeacon): String {
+        val key = DeviceNameStore.keyFor(beacon.uuid, beacon.major, beacon.minor)
+        return _state.value.deviceNames[key]
+            ?: "Beacon M${beacon.major}/m${beacon.minor}"
     }
 
     fun setMode(mode: AppMode) {

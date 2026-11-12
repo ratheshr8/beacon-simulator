@@ -1,6 +1,7 @@
 package com.ratheshr8.beaconsimulator.ui.screens
 
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,8 +16,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ClearAll
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,13 +32,16 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.ratheshr8.beaconsimulator.UiState
+import com.ratheshr8.beaconsimulator.ble.DeviceNameStore
 import com.ratheshr8.beaconsimulator.ble.DistanceEstimator
 import com.ratheshr8.beaconsimulator.ble.IBeaconPacket
+import com.ratheshr8.beaconsimulator.ble.ScannedBeacon
 import com.ratheshr8.beaconsimulator.floorplan.FloorPlanTool
 import com.ratheshr8.beaconsimulator.floorplan.ReceiverTab
 import com.ratheshr8.beaconsimulator.ui.components.BeaconListItem
@@ -55,6 +62,11 @@ fun ReceiverScreen(
     onToggleScan: () -> Unit,
     onClear: () -> Unit,
     onShowAllBleChange: (Boolean) -> Unit,
+    onFiltersExpandedChange: (Boolean) -> Unit,
+    onBeginRename: (ScannedBeacon, String) -> Unit,
+    onRenameDraftChange: (String) -> Unit,
+    onConfirmRename: () -> Unit,
+    onCancelRename: () -> Unit,
     onCreateBlankPlan: (String, Float) -> Unit,
     onImportPlanImage: (Uri, String, Float) -> Unit,
     onSelectPlan: (String) -> Unit,
@@ -96,6 +108,11 @@ fun ReceiverScreen(
                 onToggleScan = onToggleScan,
                 onClear = onClear,
                 onShowAllBleChange = onShowAllBleChange,
+                onFiltersExpandedChange = onFiltersExpandedChange,
+                onBeginRename = onBeginRename,
+                onRenameDraftChange = onRenameDraftChange,
+                onConfirmRename = onConfirmRename,
+                onCancelRename = onCancelRename,
             )
             ReceiverTab.FLOOR_PLAN -> FloorPlanScreen(
                 state = state,
@@ -127,135 +144,158 @@ private fun ScanTab(
     onToggleScan: () -> Unit,
     onClear: () -> Unit,
     onShowAllBleChange: (Boolean) -> Unit,
+    onFiltersExpandedChange: (Boolean) -> Unit,
+    onBeginRename: (ScannedBeacon, String) -> Unit,
+    onRenameDraftChange: (String) -> Unit,
+    onConfirmRename: () -> Unit,
+    onCancelRename: () -> Unit,
 ) {
     Column(
         modifier = ComposeModifierAlias
             .fillMaxSize()
             .padding(horizontal = 16.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Spacer(modifier = ComposeModifierAlias.padding(top = 12.dp))
-            Text("Receiver / Scanner", style = MaterialTheme.typography.headlineMedium)
-            Text(
-                text = "Scan nearby iBeacons and optionally POST them to an external URL.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        Spacer(modifier = ComposeModifierAlias.padding(top = 8.dp))
+        Text("Receiver / Scanner", style = MaterialTheme.typography.titleLarge)
+        Text(
+            text = "iBeacons: ${state.scanStats.iBeaconCount} · " +
+                "BLE: ${state.scanStats.uniqueDevicesSeen} · " +
+                "ads: ${state.scanStats.rawAdvertisementCount}",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
-            OutlinedTextField(
-                value = state.filterUuidText,
-                onValueChange = onFilterUuidChange,
-                modifier = ComposeModifierAlias.fillMaxWidth(),
-                label = { Text("Filter UUID (optional)") },
-                singleLine = true,
-            )
-            Row(
-                modifier = ComposeModifierAlias.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Row(
+            modifier = ComposeModifierAlias
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Button(
+                onClick = onToggleScan,
+                modifier = ComposeModifierAlias.weight(1f),
+                enabled = state.bluetoothEnabled,
             ) {
-                OutlinedTextField(
-                    value = state.filterMajorText,
-                    onValueChange = onFilterMajorChange,
-                    modifier = ComposeModifierAlias.weight(1f),
-                    label = { Text("Major") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                Icon(
+                    imageVector = if (state.isScanning) Icons.Default.Stop else Icons.Default.Radar,
+                    contentDescription = null,
                 )
-                OutlinedTextField(
-                    value = state.filterMinorText,
-                    onValueChange = onFilterMinorChange,
-                    modifier = ComposeModifierAlias.weight(1f),
-                    label = { Text("Minor") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
+                Spacer(modifier = ComposeModifierAlias.padding(horizontal = 6.dp))
+                Text(if (state.isScanning) "Stop scan" else "Start scan")
             }
-
-            OutlinedTextField(
-                value = state.webhookUrl,
-                onValueChange = onWebhookUrlChange,
-                modifier = ComposeModifierAlias.fillMaxWidth(),
-                label = { Text("Forward URL (webhook)") },
-                placeholder = { Text("https://example.com/hooks/beacons") },
-                supportingText = { Text("POSTs JSON every ~2s while scanning when enabled") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = state.forwardEnabled,
-                        onCheckedChange = onForwardEnabledChange,
-                    )
-                    Text("Forward to URL", style = MaterialTheme.typography.bodyMedium)
-                }
-                OutlinedButton(
-                    onClick = onSendNow,
-                    enabled = state.webhookUrl.isNotBlank(),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
-                    Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
-                    Text("Send now")
-                }
-            }
-
-            Row(
-                modifier = ComposeModifierAlias.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Button(
-                    onClick = onToggleScan,
-                    modifier = ComposeModifierAlias.weight(1f),
-                    enabled = state.bluetoothEnabled,
-                ) {
-                    Icon(
-                        imageVector = if (state.isScanning) Icons.Default.Stop else Icons.Default.Radar,
-                        contentDescription = null,
-                    )
-                    Spacer(modifier = ComposeModifierAlias.padding(horizontal = 6.dp))
-                    Text(if (state.isScanning) "Stop scan" else "Start scan")
-                }
-                OutlinedButton(onClick = onClear) {
-                    Icon(Icons.Default.ClearAll, contentDescription = null)
-                    Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
-                    Text("Clear")
-                }
-            }
-
-            if (!state.locationEnabled) {
-                StatusBanner(
-                    message = "Location is OFF. Turn on Location in Android settings or BLE scans stay empty.",
-                    isError = true,
-                )
-            }
-            state.statusMessage?.let { StatusBanner(it, state.isError) }
-            state.lastForwardStatus?.let { StatusBanner(it, state.lastForwardWasError) }
-
-            Text(
-                text = "iBeacons: ${state.scanStats.iBeaconCount} · " +
-                    "BLE devices: ${state.scanStats.uniqueDevicesSeen} · " +
-                    "ads heard: ${state.scanStats.rawAdvertisementCount}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = state.showAllBleDevices,
-                    onCheckedChange = onShowAllBleChange,
-                )
-                Text(
-                    "Show nearby BLE devices (debug)",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+            OutlinedButton(onClick = onClear) {
+                Icon(Icons.Default.ClearAll, contentDescription = null)
+                Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
+                Text("Clear")
             }
         }
 
+        OutlinedButton(
+            onClick = { onFiltersExpandedChange(!state.filtersExpanded) },
+            modifier = ComposeModifierAlias.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = if (state.filtersExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = null,
+            )
+            Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
+            Text(if (state.filtersExpanded) "Hide filters & webhook" else "Show filters & webhook")
+        }
+
+        AnimatedVisibility(visible = state.filtersExpanded) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = ComposeModifierAlias.padding(top = 8.dp, bottom = 4.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.filterUuidText,
+                    onValueChange = onFilterUuidChange,
+                    modifier = ComposeModifierAlias.fillMaxWidth(),
+                    label = { Text("Filter UUID (optional)") },
+                    singleLine = true,
+                )
+                Row(
+                    modifier = ComposeModifierAlias.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedTextField(
+                        value = state.filterMajorText,
+                        onValueChange = onFilterMajorChange,
+                        modifier = ComposeModifierAlias.weight(1f),
+                        label = { Text("Major") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                    OutlinedTextField(
+                        value = state.filterMinorText,
+                        onValueChange = onFilterMinorChange,
+                        modifier = ComposeModifierAlias.weight(1f),
+                        label = { Text("Minor") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                }
+                OutlinedTextField(
+                    value = state.webhookUrl,
+                    onValueChange = onWebhookUrlChange,
+                    modifier = ComposeModifierAlias.fillMaxWidth(),
+                    label = { Text("Forward URL (webhook)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = state.forwardEnabled,
+                            onCheckedChange = onForwardEnabledChange,
+                        )
+                        Text("Forward to URL", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    OutlinedButton(
+                        onClick = onSendNow,
+                        enabled = state.webhookUrl.isNotBlank(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+                        Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
+                        Text("Send now")
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = state.showAllBleDevices,
+                        onCheckedChange = onShowAllBleChange,
+                    )
+                    Text(
+                        "Show nearby BLE devices (debug)",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+
+        if (!state.locationEnabled) {
+            StatusBanner(
+                message = "Location is OFF. Turn on Location in Android settings or BLE scans stay empty.",
+                isError = true,
+            )
+        }
+        state.statusMessage?.takeIf { state.isError }?.let { StatusBanner(it, true) }
+        state.lastForwardStatus?.let { StatusBanner(it, state.lastForwardWasError) }
+
+        Text(
+            text = "Detected devices — tap ✎ to rename",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = ComposeModifierAlias.padding(top = 8.dp, bottom = 4.dp),
+        )
+
         LazyColumn(
-            modifier = ComposeModifierAlias.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 12.dp),
+            modifier = ComposeModifierAlias
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (state.scannedBeacons.isEmpty()) {
@@ -265,12 +305,9 @@ private fun ScanTab(
                             !state.isScanning ->
                                 "No beacons yet. Start a scan with a second phone in Transmitter mode."
                             state.scanStats.rawAdvertisementCount == 0 ->
-                                "Scan is running but no BLE advertisements yet. " +
-                                    "Confirm Location is ON, permissions are granted, and another device is advertising nearby."
+                                "Scan is running but no BLE advertisements yet."
                             else ->
-                                "Hearing ${state.scanStats.uniqueDevicesSeen} BLE device(s), but none look like iBeacon. " +
-                                    "Same-phone Transmitter→Receiver usually shows nothing. " +
-                                    "If the other phone is advertising, its OEM may be stripping Apple company ID (0x004C)."
+                                "Hearing BLE traffic, but no iBeacon frames yet."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -281,7 +318,11 @@ private fun ScanTab(
                     items = state.scannedBeacons,
                     key = { "ib-${it.deviceAddress}-${it.uuid}-${it.major}-${it.minor}" },
                 ) { beacon ->
+                    val key = DeviceNameStore.keyFor(beacon.uuid, beacon.major, beacon.minor)
+                    val name = state.deviceNames[key]
+                        ?: "Beacon M${beacon.major}/m${beacon.minor}"
                     BeaconListItem(
+                        displayName = name,
                         uuid = IBeaconPacket.formatUuid(beacon.uuid),
                         major = beacon.major,
                         minor = beacon.minor,
@@ -290,6 +331,7 @@ private fun ScanTab(
                         distance = DistanceEstimator.formatDistance(beacon.estimatedDistanceMeters),
                         proximity = DistanceEstimator.proximityLabel(beacon.estimatedDistanceMeters),
                         address = beacon.deviceAddress,
+                        onRename = { onBeginRename(beacon, name) },
                     )
                 }
             }
@@ -319,5 +361,27 @@ private fun ScanTab(
                 }
             }
         }
+    }
+
+    if (state.renameTargetKey != null) {
+        AlertDialog(
+            onDismissRequest = onCancelRename,
+            title = { Text("Rename device") },
+            text = {
+                OutlinedTextField(
+                    value = state.renameDraft,
+                    onValueChange = onRenameDraftChange,
+                    label = { Text("Device name") },
+                    singleLine = true,
+                    modifier = ComposeModifierAlias.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onConfirmRename) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = onCancelRename) { Text("Cancel") }
+            },
+        )
     }
 }

@@ -167,6 +167,18 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                     },
                     onClear = viewModel::clearScanResults,
                     onShowAllBleChange = viewModel::updateShowAllBleDevices,
+                    onFiltersExpandedChange = viewModel::updateFiltersExpanded,
+                    onBeginRename = { beacon, current ->
+                        viewModel.beginRenameBeacon(
+                            uuid = beacon.uuid,
+                            major = beacon.major,
+                            minor = beacon.minor,
+                            currentName = current,
+                        )
+                    },
+                    onRenameDraftChange = viewModel::updateRenameDraft,
+                    onConfirmRename = viewModel::confirmRenameBeacon,
+                    onCancelRename = viewModel::cancelRenameBeacon,
                     onCreateBlankPlan = viewModel::createBlankFloorPlan,
                     onImportPlanImage = viewModel::importFloorPlanImage,
                     onSelectPlan = viewModel::selectFloorPlan,
