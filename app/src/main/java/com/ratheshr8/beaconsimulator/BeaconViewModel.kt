@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.ratheshr8.beaconsimulator.ble.AdvertiseConfig
 import com.ratheshr8.beaconsimulator.ble.AdvertiseResult
 import com.ratheshr8.beaconsimulator.ble.BeaconAdvertiser
+import com.ratheshr8.beaconsimulator.ble.BeaconIdentity
 import com.ratheshr8.beaconsimulator.ble.BeaconScanner
 import com.ratheshr8.beaconsimulator.ble.DeviceNameStore
 import com.ratheshr8.beaconsimulator.ble.IBeaconPacket
@@ -19,9 +20,11 @@ import com.ratheshr8.beaconsimulator.floorplan.FloorPlanStore
 import com.ratheshr8.beaconsimulator.floorplan.FloorPlanTool
 import com.ratheshr8.beaconsimulator.floorplan.LocatedBeaconStatus
 import com.ratheshr8.beaconsimulator.floorplan.PlacedBeacon
+import com.ratheshr8.beaconsimulator.floorplan.Point2d
 import com.ratheshr8.beaconsimulator.floorplan.ReceiverTab
 import com.ratheshr8.beaconsimulator.floorplan.Trilateration
 import com.ratheshr8.beaconsimulator.floorplan.UserLocationEstimate
+import kotlin.math.sqrt
 import com.ratheshr8.beaconsimulator.net.BeaconForwarder
 import com.ratheshr8.beaconsimulator.net.ForwardResult
 import com.ratheshr8.beaconsimulator.permissions.BlePermissions
@@ -44,7 +47,8 @@ data class UiState(
     val minorText: String = "1",
     val txPowerText: String = "-59",
     val includeEddystone: Boolean = false,
-    val useCompatCompanyId: Boolean = false,
+    val useCompatCompanyId: Boolean = true,
+    val transmitterLabel: String = "Transmitter 1",
     val isAdvertising: Boolean = false,
     val advertisingSupported: Boolean = true,
     val bluetoothEnabled: Boolean = true,
@@ -64,6 +68,7 @@ data class UiState(
     val deviceNames: Map<String, String> = emptyMap(),
     val renameTargetKey: String? = null,
     val renameDraft: String = "",
+    val pairedIdentity: BeaconIdentity? = null,
     val webhookUrl: String = "",
     val forwardEnabled: Boolean = false,
     val lastForwardStatus: String? = null,
@@ -77,6 +82,8 @@ data class UiState(
     val pendingPlace: Pair<Float, Float>? = null,
     val locatedBeaconStatuses: List<LocatedBeaconStatus> = emptyList(),
     val userLocationEstimate: UserLocationEstimate? = null,
+    val liveMoveTrackedBeacon: Boolean = true,
+    val receiverPin: Point2d? = null,
 )
 
 private const val DEFAULT_UUID = "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"
@@ -204,6 +211,104 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     fun updateTxPower(value: String) = _state.update { it.copy(txPowerText = value) }
     fun updateIncludeEddystone(value: Boolean) = _state.update { it.copy(includeEddystone = value) }
     fun updateUseCompatCompanyId(value: Boolean) = _state.update { it.copy(useCompatCompanyId = value) }
+    fun updateTransmitterLabel(value: String) = _state.update { it.copy(transmitterLabel = value) }
+
+    fun currentTransmitterIdentity(): BeaconIdentity? {
+        val s = _state.value
+        val uuid = IBeaconPacket.parseUuidOrNull(s.uuidText) ?: return null
+        val major = s.majorText.toIntOrNull() ?: return null
+        val minor = s.minorText.toIntOrNull() ?: return null
+        val tx = s.txPowerText.toIntOrNull() ?: -59
+        return BeaconIdentity(
+            uuid = uuid,
+            major = major,
+            minor = minor,
+            label = s.transmitterLabel.ifBlank { "Transmitter" },
+            companyId = if (s.useCompatCompanyId) {
+                IBeaconPacket.COMPAT_COMPANY_ID
+            } else {
+                IBeaconPacket.APPLE_COMPANY_ID
+            },
+            txPower = tx,
+        )
+    }
+
+    fun pairFromQr(raw: String): Boolean {
+        val identity = BeaconIdentity.parseQrPayload(raw) ?: run {
+            setStatus("Invalid beacon QR code", error = true)
+            return false
+        }
+        val names = _state.value.deviceNames.toMutableMap()
+        names[identity.stableKey()] = identity.label
+        deviceNameStore.saveAll(names)
+        _state.update {
+            it.copy(
+                pairedIdentity = identity,
+                deviceNames = names,
+                filterUuidText = identity.uuid.toString().uppercase(),
+                filterMajorText = identity.major.toString(),
+                filterMinorText = identity.minor.toString(),
+                useCompatCompanyId = identity.companyId == IBeaconPacket.COMPAT_COMPANY_ID,
+            )
+        }
+        applyScanFilter()
+        ensurePairedBeaconOnFloorPlan(identity)
+        setStatus("Paired with “${identity.label}” — list locked to this beacon", error = false)
+        return true
+    }
+
+    fun clearPairing() {
+        _state.update {
+            it.copy(
+                pairedIdentity = null,
+                filterUuidText = "",
+                filterMajorText = "",
+                filterMinorText = "",
+            )
+        }
+        applyScanFilter()
+        setStatus("Cleared QR pairing / filters", error = false)
+    }
+
+    fun updateLiveMoveTrackedBeacon(enabled: Boolean) {
+        _state.update { it.copy(liveMoveTrackedBeacon = enabled) }
+    }
+
+    fun setReceiverPin(x: Float, y: Float) {
+        _state.update { it.copy(receiverPin = Point2d(x, y)) }
+        setStatus("Receiver pin set on floor plan", error = false)
+        recomputeFloorPlanOverlay()
+    }
+
+    fun movePlacedBeacon(beaconId: String, x: Float, y: Float) {
+        updateSelectedPlan { plan ->
+            plan.copy(
+                beacons = plan.beacons.map {
+                    if (it.id == beaconId) it.copy(x = x.coerceIn(0f, 1f), y = y.coerceIn(0f, 1f)) else it
+                },
+            )
+        }
+        recomputeFloorPlanOverlay()
+    }
+
+    private fun ensurePairedBeaconOnFloorPlan(identity: BeaconIdentity) {
+        val planId = _state.value.selectedFloorPlanId ?: return
+        val plan = _state.value.floorPlans.firstOrNull { it.id == planId } ?: return
+        val exists = plan.beacons.any {
+            it.uuid == identity.uuid && it.major == identity.major && it.minor == identity.minor
+        }
+        if (exists) return
+        val placed = PlacedBeacon(
+            label = identity.label,
+            uuid = identity.uuid,
+            major = identity.major,
+            minor = identity.minor,
+            x = 0.5f,
+            y = 0.5f,
+        )
+        updateSelectedPlan { it.copy(beacons = it.beacons + placed) }
+        setStatus("Added “${identity.label}” to floor plan center — drag in Place mode to position", error = false)
+    }
 
     fun updateFilterUuid(value: String) {
         _state.update { it.copy(filterUuidText = value) }
@@ -362,13 +467,22 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun recomputeFloorPlanOverlay() {
-        val state = _state.value
-        val plan = state.floorPlans.firstOrNull { it.id == state.selectedFloorPlanId }
+        var state = _state.value
+        var plan = state.floorPlans.firstOrNull { it.id == state.selectedFloorPlanId }
         if (plan == null) {
             _state.update {
                 it.copy(locatedBeaconStatuses = emptyList(), userLocationEstimate = null)
             }
             return
+        }
+
+        // Live-move paired/tracked transmitter on the map from measured distance.
+        if (state.liveMoveTrackedBeacon && state.floorPlanTool == FloorPlanTool.LOCATE) {
+            val moved = maybeLiveMoveTrackedBeacon(plan, state)
+            if (moved != null) {
+                plan = moved
+                state = _state.value
+            }
         }
 
         val statuses = plan.beacons.map { placed ->
@@ -410,6 +524,43 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
                 userLocationEstimate = estimate,
             )
         }
+    }
+
+    /**
+     * Move the paired beacon marker along the ray from the receiver pin (or You)
+     * so map distance matches the latest RSSI estimate — reflects transmitter motion.
+     */
+    private fun maybeLiveMoveTrackedBeacon(plan: FloorPlan, state: UiState): FloorPlan? {
+        val paired = state.pairedIdentity ?: return null
+        val scan = state.scannedBeacons.firstOrNull {
+            it.uuid == paired.uuid && it.major == paired.major && it.minor == paired.minor
+        } ?: return null
+        val meters = scan.estimatedDistanceMeters ?: return null
+        val origin = state.receiverPin ?: state.userLocationEstimate?.point ?: Point2d(0.5f, 0.5f)
+        val target = plan.beacons.firstOrNull {
+            it.uuid == paired.uuid && it.major == paired.major && it.minor == paired.minor
+        } ?: return null
+
+        val dx = target.x - origin.x
+        val dy = target.y - origin.y
+        val currentNorm = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-4f)
+        val desiredNorm = Trilateration.metersToNormalized(meters, plan.widthMeters)
+        val scale = desiredNorm / currentNorm
+        val newX = (origin.x + dx * scale).coerceIn(0.02f, 0.98f)
+        val newY = (origin.y + dy * scale).coerceIn(0.02f, 0.98f)
+        if (kotlin.math.abs(newX - target.x) < 0.004f && kotlin.math.abs(newY - target.y) < 0.004f) {
+            return null
+        }
+
+        val updatedBeacons = plan.beacons.map {
+            if (it.id == target.id) it.copy(x = newX, y = newY) else it
+        }
+        val updatedPlan = plan.copy(beacons = updatedBeacons)
+        val plans = state.floorPlans.map { if (it.id == plan.id) updatedPlan else it }
+        // Persist lightly so restarts keep last known tracked spot
+        floorPlanStore.saveAll(plans)
+        _state.update { it.copy(floorPlans = plans) }
+        return updatedPlan
     }
 
     // endregion

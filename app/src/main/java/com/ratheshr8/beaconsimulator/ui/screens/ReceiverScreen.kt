@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
@@ -35,8 +37,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.ratheshr8.beaconsimulator.UiState
 import com.ratheshr8.beaconsimulator.ble.DeviceNameStore
 import com.ratheshr8.beaconsimulator.ble.DistanceEstimator
@@ -44,8 +49,10 @@ import com.ratheshr8.beaconsimulator.ble.IBeaconPacket
 import com.ratheshr8.beaconsimulator.ble.ScannedBeacon
 import com.ratheshr8.beaconsimulator.floorplan.FloorPlanTool
 import com.ratheshr8.beaconsimulator.floorplan.ReceiverTab
+import com.ratheshr8.beaconsimulator.permissions.BlePermissions
 import com.ratheshr8.beaconsimulator.ui.components.BeaconListItem
 import com.ratheshr8.beaconsimulator.ui.components.StatusBanner
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Modifier as ComposeModifierAlias
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -67,6 +74,11 @@ fun ReceiverScreen(
     onRenameDraftChange: (String) -> Unit,
     onConfirmRename: () -> Unit,
     onCancelRename: () -> Unit,
+    onPairFromQr: (String) -> Unit,
+    onClearPairing: () -> Unit,
+    onLiveMoveChange: (Boolean) -> Unit,
+    onSetReceiverPin: (Float, Float) -> Unit,
+    onBeaconDrag: (String, Float, Float) -> Unit,
     onCreateBlankPlan: (String, Float) -> Unit,
     onImportPlanImage: (Uri, String, Float) -> Unit,
     onSelectPlan: (String) -> Unit,
@@ -113,6 +125,8 @@ fun ReceiverScreen(
                 onRenameDraftChange = onRenameDraftChange,
                 onConfirmRename = onConfirmRename,
                 onCancelRename = onCancelRename,
+                onPairFromQr = onPairFromQr,
+                onClearPairing = onClearPairing,
             )
             ReceiverTab.FLOOR_PLAN -> FloorPlanScreen(
                 state = state,
@@ -127,6 +141,9 @@ fun ReceiverScreen(
                 onCancelPlace = onCancelPlace,
                 onDeleteBeacon = onDeleteBeacon,
                 onToggleScan = onToggleScan,
+                onLiveMoveChange = onLiveMoveChange,
+                onSetReceiverPin = onSetReceiverPin,
+                onBeaconDrag = onBeaconDrag,
             )
         }
     }
@@ -149,7 +166,27 @@ private fun ScanTab(
     onRenameDraftChange: (String) -> Unit,
     onConfirmRename: () -> Unit,
     onCancelRename: () -> Unit,
+    onPairFromQr: (String) -> Unit,
+    onClearPairing: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val qrLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents ?: return@rememberLauncherForActivityResult
+        onPairFromQr(contents)
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            qrLauncher.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("Scan QR on the Transmitter phone")
+                    .setBeepEnabled(false),
+            )
+        }
+    }
+
     Column(
         modifier = ComposeModifierAlias
             .fillMaxSize()
@@ -169,7 +206,7 @@ private fun ScanTab(
             modifier = ComposeModifierAlias
                 .fillMaxWidth()
                 .padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(
                 onClick = onToggleScan,
@@ -181,13 +218,37 @@ private fun ScanTab(
                     contentDescription = null,
                 )
                 Spacer(modifier = ComposeModifierAlias.padding(horizontal = 6.dp))
-                Text(if (state.isScanning) "Stop scan" else "Start scan")
+                Text(if (state.isScanning) "Stop" else "Scan")
+            }
+            OutlinedButton(
+                onClick = {
+                    if (BlePermissions.hasCamera(context)) {
+                        qrLauncher.launch(
+                            ScanOptions()
+                                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                .setPrompt("Scan QR on the Transmitter phone")
+                                .setBeepEnabled(false),
+                        )
+                    } else {
+                        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                    }
+                },
+            ) {
+                Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
+                Text("QR")
             }
             OutlinedButton(onClick = onClear) {
                 Icon(Icons.Default.ClearAll, contentDescription = null)
-                Spacer(modifier = ComposeModifierAlias.padding(horizontal = 4.dp))
-                Text("Clear")
             }
+        }
+
+        state.pairedIdentity?.let { paired ->
+            StatusBanner(
+                message = "Paired: ${paired.label} · M${paired.major}/m${paired.minor} — list locked",
+                isError = false,
+            )
+            TextButton(onClick = onClearPairing) { Text("Clear pairing") }
         }
 
         OutlinedButton(

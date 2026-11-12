@@ -38,4 +38,8 @@ object BlePermissions {
             ?: return false
         return LocationManagerCompat.isLocationEnabled(lm)
     }
+
+    fun hasCamera(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
 }

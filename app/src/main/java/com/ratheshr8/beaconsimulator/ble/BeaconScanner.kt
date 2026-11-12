@@ -166,9 +166,18 @@ class BeaconScanner(context: Context) {
             return
         }
 
-        val key = "${parsed.uuid}|${parsed.major}|${parsed.minor}|$address"
+        // One row per beacon identity (uuid/major/minor), keep strongest RSSI address
+        val identityKey = DeviceNameStore.keyFor(parsed.uuid, parsed.major, parsed.minor)
         val distance = DistanceEstimator.estimateMeters(result.rssi, parsed.txPower)
-        beacons[key] = ScannedBeacon(
+        val existing = beacons[identityKey]
+        if (existing != null && result.rssi < existing.rssi - 3 &&
+            System.currentTimeMillis() - existing.lastSeenEpochMs < 3_000L
+        ) {
+            // Ignore brief weaker sightings so the list doesn't thrash
+            emit()
+            return
+        }
+        beacons[identityKey] = ScannedBeacon(
             deviceAddress = address,
             uuid = parsed.uuid,
             major = parsed.major,
@@ -184,20 +193,16 @@ class BeaconScanner(context: Context) {
     private fun parseIBeacon(record: android.bluetooth.le.ScanRecord?): IBeaconPacket.Parsed? {
         if (record == null) return null
 
-        // 1) Direct Apple company ID lookup
+        // Only accept Apple iBeacon or our compat company ID — avoids floods of false hits.
         IBeaconPacket.parseManufacturerPayload(
             record.getManufacturerSpecificData(IBeaconPacket.APPLE_COMPANY_ID)
         )?.let { return it }
 
-        // 2) Any manufacturer blob that looks like iBeacon (OEM may remap company ID)
-        val sparse = record.manufacturerSpecificData
-        if (sparse != null) {
-            for (i in 0 until sparse.size()) {
-                IBeaconPacket.parseManufacturerPayload(sparse.valueAt(i))?.let { return it }
-            }
-        }
+        IBeaconPacket.parseManufacturerPayload(
+            record.getManufacturerSpecificData(IBeaconPacket.COMPAT_COMPANY_ID)
+        )?.let { return it }
 
-        // 3) Raw AD bytes walk
+        // Raw AD walk still limited to Apple 0x004C manufacturer structures.
         return IBeaconPacket.parseFromRawScanRecord(record.bytes)
     }
 
@@ -212,7 +217,8 @@ class BeaconScanner(context: Context) {
         val beaconSnapshot = beacons.values
             .filter { matchesFilter(it) }
             .sortedWith(
-                compareByDescending<ScannedBeacon> { it.lastSeenEpochMs }
+                // Stable order by identity, then stronger signal — avoids jumpy selection
+                compareBy<ScannedBeacon> { DeviceNameStore.keyFor(it.uuid, it.major, it.minor) }
                     .thenByDescending { it.rssi }
             )
         val nearbySnapshot = nearby.values

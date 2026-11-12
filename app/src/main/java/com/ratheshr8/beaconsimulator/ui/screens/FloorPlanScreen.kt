@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -64,6 +65,9 @@ fun FloorPlanScreen(
     onCancelPlace: () -> Unit,
     onDeleteBeacon: (String) -> Unit,
     onToggleScan: () -> Unit,
+    onLiveMoveChange: (Boolean) -> Unit,
+    onSetReceiverPin: (Float, Float) -> Unit,
+    onBeaconDrag: (String, Float, Float) -> Unit,
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var createModeImport by remember { mutableStateOf(false) }
@@ -199,9 +203,9 @@ fun FloorPlanScreen(
             Text(
                 text = when (state.floorPlanTool) {
                     FloorPlanTool.PLACE ->
-                        "Tap the map to drop a beacon at its exact floor position."
+                        "Tap to place · drag a marker to reposition (e.g. after the transmitter moves)."
                     FloorPlanTool.LOCATE ->
-                        "Start scan to highlight detected beacons, draw range rings, and estimate your position (2–3+ placed beacons in range)."
+                        "Scan to update ranges. Long-press to set Receiver pin. Paired transmitter ★ moves live from RSSI."
                     FloorPlanTool.VIEW ->
                         "Placed beacons are shown at their configured map coordinates."
                 },
@@ -216,6 +220,16 @@ fun FloorPlanScreen(
                 ) {
                     Text(if (state.isScanning) "Stop scan" else "Start scan to locate")
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = state.liveMoveTrackedBeacon,
+                        onCheckedChange = onLiveMoveChange,
+                    )
+                    Text(
+                        "Live-move paired transmitter on map from RSSI",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
             }
 
             FloorPlanCanvas(
@@ -227,9 +241,16 @@ fun FloorPlanScreen(
                 } else {
                     null
                 },
+                receiverPin = state.receiverPin,
+                trackedBeaconKey = state.pairedIdentity?.stableKey(),
+                allowDragBeacons = state.floorPlanTool == FloorPlanTool.PLACE,
                 onTapNormalized = { x, y ->
                     if (state.floorPlanTool == FloorPlanTool.PLACE) onMapTap(x, y)
                 },
+                onLongPressNormalized = { x, y ->
+                    if (state.floorPlanTool == FloorPlanTool.LOCATE) onSetReceiverPin(x, y)
+                },
+                onBeaconDrag = onBeaconDrag,
             )
 
             if (state.floorPlanTool == FloorPlanTool.LOCATE) {

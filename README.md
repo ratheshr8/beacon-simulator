@@ -75,15 +75,20 @@ In **Receiver** mode you can POST live scan results to any HTTP(S) webhook:
 
 Use this to feed your existing backend, n8n/Zapier webhook, or another app without pairing to the BLE radio directly.
 
+### QR pairing (recommended)
+
+1. **Transmitter** phone: set device name / UUID / major / minor → **Start advertising** → show the on-screen **QR**.
+2. **Receiver** phone: tap **QR** → scan that code. The list locks to that transmitter (no more jumping clones).
+3. Optional: open **Floor plan** — the paired beacon is added and can **live-move** from RSSI while you walk the transmitter around.
+
 ### Floor plan & beacon locations
 
 Receiver → **Floor plan** tab:
 
 1. **New blank** or **From photo** — create a plan and set its real-world width in meters.
-2. **Place beacon** — tap the map where a physical (or simulated) beacon sits, then enter UUID / major / minor (or fill from a live scan).
-3. **Locate** — start scanning. Detected placed beacons highlight with RSSI and range rings; with **2+** beacons in range the app estimates **your** position on the plan (RSSI multilateration — approximate indoors).
-
-Placed beacon coordinates are the “exact” map locations you configure. Live locate overlays detection/range; it does not invent beacon coordinates from RSSI alone.
+2. **Place beacon** — tap to place; **drag** markers to reposition after a transmitter moves.
+3. **Locate** — start scanning. Long-press to set a **Receiver pin**. Enable **Live-move paired transmitter** so the ★ marker tracks RSSI distance changes on the map.
+4. With **2+** placed beacons in range, the app can also estimate **your** position (approximate indoors).
 
 ---
 
