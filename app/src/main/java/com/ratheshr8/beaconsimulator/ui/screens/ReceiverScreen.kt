@@ -12,16 +12,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -37,6 +40,9 @@ fun ReceiverScreen(
     onFilterUuidChange: (String) -> Unit,
     onFilterMajorChange: (String) -> Unit,
     onFilterMinorChange: (String) -> Unit,
+    onWebhookUrlChange: (String) -> Unit,
+    onForwardEnabledChange: (Boolean) -> Unit,
+    onSendNow: () -> Unit,
     onToggleScan: () -> Unit,
     onClear: () -> Unit,
 ) {
@@ -52,7 +58,7 @@ fun ReceiverScreen(
                 style = MaterialTheme.typography.headlineMedium,
             )
             Text(
-                text = "Scan for nearby iBeacon advertisements. Filters are optional.",
+                text = "Scan for nearby iBeacon advertisements and optionally POST them to an external URL.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -86,6 +92,42 @@ fun ReceiverScreen(
                 )
             }
 
+            OutlinedTextField(
+                value = state.webhookUrl,
+                onValueChange = onWebhookUrlChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Forward URL (webhook)") },
+                placeholder = { Text("https://example.com/hooks/beacons") },
+                supportingText = {
+                    Text("POSTs JSON every ~2s while scanning when enabled")
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = state.forwardEnabled,
+                        onCheckedChange = onForwardEnabledChange,
+                    )
+                    Text(
+                        text = "Forward to URL",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                OutlinedButton(
+                    onClick = onSendNow,
+                    enabled = state.webhookUrl.isNotBlank(),
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+                    Spacer(modifier = Modifier.padding(horizontal = 4.dp))
+                    Text("Send now")
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -110,6 +152,7 @@ fun ReceiverScreen(
             }
 
             state.statusMessage?.let { StatusBanner(it, state.isError) }
+            state.lastForwardStatus?.let { StatusBanner(it, state.lastForwardWasError) }
 
             Text(
                 text = "${state.scannedBeacons.size} beacon(s)",

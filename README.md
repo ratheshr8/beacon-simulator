@@ -12,8 +12,8 @@ Get the prebuilt debug APK from GitHub Releases:
 
 **https://github.com/ratheshr8/beacon-simulator/releases/latest**
 
-Asset: `beacon-simulator-1.0.0-debug.apk`  
-Install: open the file on your phone, or `adb install -r beacon-simulator-1.0.0-debug.apk`  
+Latest asset: `beacon-simulator-*-debug.apk` (see release notes for the exact filename)  
+Install: open the file on your phone, or `adb install -r <apk-file>`  
 (Allow install from unknown sources / “Install unknown apps” if Android asks.)
 
 ---
@@ -43,6 +43,37 @@ Scans for nearby BLE advertisements and parses Apple company ID (`0x004C`) iBeac
 - Advertiser MAC address  
 
 Optional filters: UUID, major, minor.
+
+### Forward scanned beacons to an external URL
+
+In **Receiver** mode you can POST live scan results to any HTTP(S) webhook:
+
+1. Enter a **Forward URL** (e.g. `https://your-server.com/hooks/beacons` or a local `http://192.168.x.x:3000/...`).
+2. Enable **Forward to URL** (posts about every 2 seconds while scanning), and/or tap **Send now**.
+3. Your server receives JSON like:
+
+```json
+{
+  "source": "beacon-simulator",
+  "event": "beacon_scan",
+  "timestampMs": 1731400000000,
+  "beacons": [
+    {
+      "uuid": "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0",
+      "major": 1,
+      "minor": 1,
+      "rssi": -61,
+      "txPower": -59,
+      "distanceMeters": 1.25,
+      "proximity": "Near",
+      "deviceAddress": "AA:BB:CC:DD:EE:FF",
+      "lastSeenEpochMs": 1731400000123
+    }
+  ]
+}
+```
+
+Use this to feed your existing backend, n8n/Zapier webhook, or another app without pairing to the BLE radio directly.
 
 ---
 

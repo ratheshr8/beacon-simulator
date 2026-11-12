@@ -153,6 +153,9 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                     onFilterUuidChange = viewModel::updateFilterUuid,
                     onFilterMajorChange = viewModel::updateFilterMajor,
                     onFilterMinorChange = viewModel::updateFilterMinor,
+                    onWebhookUrlChange = viewModel::updateWebhookUrl,
+                    onForwardEnabledChange = viewModel::updateForwardEnabled,
+                    onSendNow = viewModel::sendNow,
                     onToggleScan = {
                         if (!BlePermissions.hasAll(viewModel.getApplication())) {
                             permissionLauncher.launch(BlePermissions.requiredPermissions())
