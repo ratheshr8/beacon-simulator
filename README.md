@@ -1,2 +1,153 @@
-# beacon-simulator
-Android app to simulate BLE beacon and receiver for testing without physical beacon hardware
+# Beacon Simulator
+
+Android app that simulates both a **BLE beacon transmitter** and a **BLE receiver/scanner** so you can test beacon-aware apps without physical beacon hardware.
+
+**Package:** `com.ratheshr8.beaconsimulator`  
+**Min SDK:** 26 (Android 8.0) · **Target / Compile SDK:** 34  
+**UI:** Kotlin + Jetpack Compose (Material 3)
+
+---
+
+## Modes
+
+### 1. Transmitter (Beacon)
+
+Advertises an **iBeacon** packet using Android BLE advertising APIs (`BluetoothLeAdvertiser`):
+
+| Field | Description |
+| --- | --- |
+| Proximity UUID | 128-bit UUID (same format your app already uses) |
+| Major / Minor | 0–65535 |
+| Measured TX power | Calibrated RSSI at 1 m (typical −59) |
+| Eddystone-UID (optional) | Extra UID frame in the scan response (derived from UUID/major/minor) |
+
+Tap **Start advertising** to begin, **Stop advertising** to end.
+
+### 2. Receiver (Scanner)
+
+Scans for nearby BLE advertisements and parses Apple company ID (`0x004C`) iBeacon frames. The list shows:
+
+- UUID, major, minor  
+- RSSI  
+- Rough estimated distance / proximity  
+- Advertiser MAC address  
+
+Optional filters: UUID, major, minor.
+
+---
+
+## Build & install
+
+### Prerequisites
+
+- Android Studio Ladybug / Koala+ (or JDK 17 + Android SDK 34)
+- A physical Android phone with Bluetooth LE (emulators do **not** support BLE advertising/scanning usefully)
+
+### From Android Studio
+
+1. `git clone https://github.com/ratheshr8/beacon-simulator.git`
+2. Open the project in Android Studio and let Gradle sync.
+3. Connect a device → **Run** `app`.
+
+### From the command line
+
+```bash
+./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+On first launch, grant **Nearby devices / Bluetooth** and **Location** permissions when prompted.
+
+---
+
+## How to use both modes
+
+### Quick self-test (two phones)
+
+1. Phone A → **Transmitter**: set UUID / major / minor → **Start advertising**.
+2. Phone B → **Receiver**: optionally paste the same UUID filter → **Start scan**.
+3. Confirm Phone B lists the beacon with updating RSSI.
+
+### Single-phone workflow
+
+Use **Transmitter** on this device and point your production beacon-aware app (on a second device, or the same device if your stack supports it) at matching UUID/major/minor.  
+Many stacks cannot scan advertisements originating from the same radio; prefer two devices.
+
+---
+
+## Point your existing app at this simulator
+
+1. Open **Transmitter** mode.
+2. Set **UUID**, **Major**, and **Minor** to the exact values your app already monitors (or change your app’s monitored region to match the simulator defaults).
+3. Start advertising.
+4. In your existing app, start ranging/monitoring as usual.
+
+**Default proximity UUID:** `E2C56DB5-DFFB-48D2-B060-D0F5A71096E0`  
+**Default major / minor:** `1` / `1`  
+**Default measured power:** `-59`
+
+Your scanner must read **manufacturer-specific data** for company ID `0x004C` with the standard iBeacon layout (`0x02 0x15` + UUID + major + minor + TX). Libraries such as Android Beacon Library, custom `ScanRecord` parsers, and many cross-platform plugins do this.
+
+---
+
+## Permissions
+
+| Android version | Permissions requested |
+| --- | --- |
+| 12+ (API 31+) | `BLUETOOTH_SCAN`, `BLUETOOTH_ADVERTISE`, `BLUETOOTH_CONNECT`, `ACCESS_FINE_LOCATION` |
+| 8–11 | `ACCESS_FINE_LOCATION` (+ legacy Bluetooth permissions declared in the manifest) |
+
+Location is still requested because some OEMs and older APIs gate BLE scan results behind it, even when scan is marked `neverForLocation`.
+
+---
+
+## Known Android BLE advertising limitations
+
+Android is **not** an iBeacon platform the way iOS is. Practical caveats:
+
+1. **Hardware support varies**  
+   Advertising requires `BluetoothAdapter.isMultipleAdvertisementSupported() == true`. Many low-end / older phones return `false`. The app surfaces this in Transmitter mode.
+
+2. **OEM / firmware filtering**  
+   Some manufacturers restrict or strip Apple company ID (`0x004C`) manufacturer data. Advertising may report success while receivers never see a valid iBeacon frame—or `startAdvertising` may fail with `ADVERTISE_FAILED_FEATURE_UNSUPPORTED` / data errors.
+
+3. **iOS Core Location usually will not see Android-emulated iBeacons**  
+   iOS region monitoring expects Apple’s iBeacon ecosystem. An Android phone advertising manufacturer data is **not** a reliable stand-in for a physical iBeacon when the client is iOS. Use an Android scanner (this app’s Receiver mode, or your Android app) for validation.
+
+4. **Same-device loopback is unreliable**  
+   A phone generally cannot reliably discover its own advertisements. Use two devices or a USB BLE sniffer.
+
+5. **Payload size**  
+   BLE advertise PDUs are small. Enabling Eddystone-UID uses the scan response. If start fails with “data too large”, disable Eddystone.
+
+6. **Distance is approximate**  
+   RSSI→meters uses a common path-loss heuristic. Indoors, treat proximity bands (Immediate / Near / Far) as guidance only.
+
+7. **Background limits**  
+   This app is built for foreground testing. Android aggressively limits background scan/advertise; keep the screen on while testing.
+
+**Best practical approach used here:** advertise a standards-shaped iBeacon manufacturer payload via `BluetoothLeAdvertiser`, optionally add Eddystone-UID service data in the scan response, and verify with the in-app Receiver or any scanner that parses manufacturer data.
+
+---
+
+## Project layout
+
+```
+app/src/main/java/com/ratheshr8/beaconsimulator/
+  MainActivity.kt              # Compose host + permission flow
+  BeaconViewModel.kt           # Mode state, start/stop wiring
+  ble/
+    IBeaconPacket.kt           # Build/parse iBeacon frames
+    EddystonePacket.kt         # Optional Eddystone-UID
+    BeaconAdvertiser.kt        # BLE advertise
+    BeaconScanner.kt           # BLE scan + filter
+    DistanceEstimator.kt       # RSSI → rough meters
+  permissions/BlePermissions.kt
+  ui/…                         # Material 3 screens
+```
+
+---
+
+## License
+
+MIT — use freely for development and testing.
