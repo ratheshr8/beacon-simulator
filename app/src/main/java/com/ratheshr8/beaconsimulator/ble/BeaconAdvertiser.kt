@@ -22,6 +22,11 @@ data class AdvertiseConfig(
     val minor: Int,
     val txPower: Int,
     val includeEddystone: Boolean = false,
+    /**
+     * BLE company ID for manufacturer data. Apple iBeacon uses 0x004C; some OEMs
+     * strip that ID when advertising — use [IBeaconPacket.COMPAT_COMPANY_ID] then.
+     */
+    val companyId: Int = IBeaconPacket.APPLE_COMPANY_ID,
 )
 
 /**
@@ -92,7 +97,7 @@ class BeaconAdvertiser(context: Context) {
         val advertiseDataBuilder = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
-            .addManufacturerData(IBeaconPacket.APPLE_COMPANY_ID, iBeaconData)
+            .addManufacturerData(config.companyId, iBeaconData)
 
         // Scan response can carry Eddystone-UID without overcrowding the primary PDU.
         val scanResponse = if (config.includeEddystone) {

@@ -9,7 +9,9 @@ import com.ratheshr8.beaconsimulator.ble.AdvertiseResult
 import com.ratheshr8.beaconsimulator.ble.BeaconAdvertiser
 import com.ratheshr8.beaconsimulator.ble.BeaconScanner
 import com.ratheshr8.beaconsimulator.ble.IBeaconPacket
+import com.ratheshr8.beaconsimulator.ble.NearbyBleDevice
 import com.ratheshr8.beaconsimulator.ble.ScanFilterConfig
+import com.ratheshr8.beaconsimulator.ble.ScanStats
 import com.ratheshr8.beaconsimulator.ble.ScannedBeacon
 import com.ratheshr8.beaconsimulator.floorplan.FloorPlan
 import com.ratheshr8.beaconsimulator.floorplan.FloorPlanStore
@@ -21,6 +23,7 @@ import com.ratheshr8.beaconsimulator.floorplan.Trilateration
 import com.ratheshr8.beaconsimulator.floorplan.UserLocationEstimate
 import com.ratheshr8.beaconsimulator.net.BeaconForwarder
 import com.ratheshr8.beaconsimulator.net.ForwardResult
+import com.ratheshr8.beaconsimulator.permissions.BlePermissions
 import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -40,9 +43,11 @@ data class UiState(
     val minorText: String = "1",
     val txPowerText: String = "-59",
     val includeEddystone: Boolean = false,
+    val useCompatCompanyId: Boolean = false,
     val isAdvertising: Boolean = false,
     val advertisingSupported: Boolean = true,
     val bluetoothEnabled: Boolean = true,
+    val locationEnabled: Boolean = true,
     val statusMessage: String? = null,
     val isError: Boolean = false,
     // Receiver scan
@@ -51,6 +56,9 @@ data class UiState(
     val filterMinorText: String = "",
     val isScanning: Boolean = false,
     val scannedBeacons: List<ScannedBeacon> = emptyList(),
+    val nearbyBleDevices: List<NearbyBleDevice> = emptyList(),
+    val scanStats: ScanStats = ScanStats(),
+    val showAllBleDevices: Boolean = true,
     val webhookUrl: String = "",
     val forwardEnabled: Boolean = false,
     val lastForwardStatus: String? = null,
@@ -80,6 +88,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
         UiState(
             advertisingSupported = advertiser.isAdvertisingSupported(),
             bluetoothEnabled = advertiser.isBluetoothEnabled(),
+            locationEnabled = BlePermissions.isLocationEnabled(application),
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -95,8 +104,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
         }
         recomputeFloorPlanOverlay()
 
-        scanner.setListener { beacons ->
-            _state.update { it.copy(scannedBeacons = beacons) }
+        scanner.setListener { beacons, nearby, stats ->
+            _state.update {
+                it.copy(
+                    scannedBeacons = beacons,
+                    nearbyBleDevices = nearby,
+                    scanStats = stats,
+                )
+            }
             recomputeFloorPlanOverlay()
         }
     }
@@ -106,8 +121,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 advertisingSupported = advertiser.isAdvertisingSupported(),
                 bluetoothEnabled = advertiser.isBluetoothEnabled() || scanner.isBluetoothEnabled(),
+                locationEnabled = BlePermissions.isLocationEnabled(getApplication()),
             )
         }
+    }
+
+    fun updateShowAllBleDevices(show: Boolean) {
+        _state.update { it.copy(showAllBleDevices = show) }
     }
 
     fun setMode(mode: AppMode) {
@@ -129,6 +149,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     fun updateMinor(value: String) = _state.update { it.copy(minorText = value) }
     fun updateTxPower(value: String) = _state.update { it.copy(txPowerText = value) }
     fun updateIncludeEddystone(value: Boolean) = _state.update { it.copy(includeEddystone = value) }
+    fun updateUseCompatCompanyId(value: Boolean) = _state.update { it.copy(useCompatCompanyId = value) }
 
     fun updateFilterUuid(value: String) {
         _state.update { it.copy(filterUuidText = value) }
@@ -371,14 +392,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
                 minor = minor,
                 txPower = txPower,
                 includeEddystone = current.includeEddystone,
+                companyId = if (current.useCompatCompanyId) {
+                    IBeaconPacket.COMPAT_COMPANY_ID
+                } else {
+                    IBeaconPacket.APPLE_COMPANY_ID
+                },
             )
         ) { result ->
             viewModelScope.launch {
                 when (result) {
                     is AdvertiseResult.Started -> {
                         _state.update { it.copy(isAdvertising = true) }
+                        val company = if (current.useCompatCompanyId) {
+                            "compat 0x0BAF"
+                        } else {
+                            "Apple 0x004C"
+                        }
                         setStatus(
-                            "Advertising iBeacon" +
+                            "Advertising iBeacon ($company)" +
                                 if (current.includeEddystone) " + Eddystone-UID" else "",
                             error = false,
                         )
@@ -404,6 +435,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun startScan() {
         refreshHardwareState()
+        if (!_state.value.locationEnabled) {
+            setStatus(
+                "Location is OFF. Android will return empty BLE scans — turn on Location in system settings, then retry.",
+                error = true,
+            )
+            return
+        }
         applyScanFilter()
         scanner.start { error ->
             viewModelScope.launch {
@@ -413,7 +451,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         _state.update { it.copy(isScanning = true) }
-        setStatus("Scanning for iBeacons…", error = false)
+        setStatus(
+            "Scanning… Use a second phone in Transmitter mode (same-phone advertise→scan usually shows nothing).",
+            error = false,
+        )
         if (_state.value.forwardEnabled) {
             startForwardLoop()
         }

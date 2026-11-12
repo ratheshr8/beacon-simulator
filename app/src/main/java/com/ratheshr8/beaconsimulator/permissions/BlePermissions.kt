@@ -3,8 +3,10 @@ package com.ratheshr8.beaconsimulator.permissions
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
 
 object BlePermissions {
     fun requiredPermissions(): Array<String> {
@@ -30,4 +32,10 @@ object BlePermissions {
     }
 
     fun hasAll(context: Context): Boolean = missingPermissions(context).isEmpty()
+
+    fun isLocationEnabled(context: Context): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            ?: return false
+        return LocationManagerCompat.isLocationEnabled(lm)
+    }
 }

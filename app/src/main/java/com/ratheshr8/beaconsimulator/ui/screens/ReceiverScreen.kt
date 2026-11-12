@@ -54,6 +54,7 @@ fun ReceiverScreen(
     onSendNow: () -> Unit,
     onToggleScan: () -> Unit,
     onClear: () -> Unit,
+    onShowAllBleChange: (Boolean) -> Unit,
     onCreateBlankPlan: (String, Float) -> Unit,
     onImportPlanImage: (Uri, String, Float) -> Unit,
     onSelectPlan: (String) -> Unit,
@@ -94,6 +95,7 @@ fun ReceiverScreen(
                 onSendNow = onSendNow,
                 onToggleScan = onToggleScan,
                 onClear = onClear,
+                onShowAllBleChange = onShowAllBleChange,
             )
             ReceiverTab.FLOOR_PLAN -> FloorPlanScreen(
                 state = state,
@@ -124,6 +126,7 @@ private fun ScanTab(
     onSendNow: () -> Unit,
     onToggleScan: () -> Unit,
     onClear: () -> Unit,
+    onShowAllBleChange: (Boolean) -> Unit,
 ) {
     Column(
         modifier = ComposeModifierAlias
@@ -222,36 +225,61 @@ private fun ScanTab(
                 }
             }
 
+            if (!state.locationEnabled) {
+                StatusBanner(
+                    message = "Location is OFF. Turn on Location in Android settings or BLE scans stay empty.",
+                    isError = true,
+                )
+            }
             state.statusMessage?.let { StatusBanner(it, state.isError) }
             state.lastForwardStatus?.let { StatusBanner(it, state.lastForwardWasError) }
 
             Text(
-                text = "${state.scannedBeacons.size} beacon(s)",
+                text = "iBeacons: ${state.scanStats.iBeaconCount} · " +
+                    "BLE devices: ${state.scanStats.uniqueDevicesSeen} · " +
+                    "ads heard: ${state.scanStats.rawAdvertisementCount}",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = state.showAllBleDevices,
+                    onCheckedChange = onShowAllBleChange,
+                )
+                Text(
+                    "Show nearby BLE devices (debug)",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
 
-        if (state.scannedBeacons.isEmpty()) {
-            Text(
-                text = if (state.isScanning) {
-                    "Listening for Apple company ID (0x004C) iBeacon frames…"
-                } else {
-                    "No beacons yet. Start a scan, or open Transmitter mode on another device."
-                },
-                modifier = ComposeModifierAlias.padding(vertical = 24.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            LazyColumn(
-                modifier = ComposeModifierAlias.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
+        LazyColumn(
+            modifier = ComposeModifierAlias.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (state.scannedBeacons.isEmpty()) {
+                item {
+                    Text(
+                        text = when {
+                            !state.isScanning ->
+                                "No beacons yet. Start a scan with a second phone in Transmitter mode."
+                            state.scanStats.rawAdvertisementCount == 0 ->
+                                "Scan is running but no BLE advertisements yet. " +
+                                    "Confirm Location is ON, permissions are granted, and another device is advertising nearby."
+                            else ->
+                                "Hearing ${state.scanStats.uniqueDevicesSeen} BLE device(s), but none look like iBeacon. " +
+                                    "Same-phone Transmitter→Receiver usually shows nothing. " +
+                                    "If the other phone is advertising, its OEM may be stripping Apple company ID (0x004C)."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
                 items(
                     items = state.scannedBeacons,
-                    key = { "${it.deviceAddress}-${it.uuid}-${it.major}-${it.minor}" },
+                    key = { "ib-${it.deviceAddress}-${it.uuid}-${it.major}-${it.minor}" },
                 ) { beacon ->
                     BeaconListItem(
                         uuid = IBeaconPacket.formatUuid(beacon.uuid),
@@ -262,6 +290,31 @@ private fun ScanTab(
                         distance = DistanceEstimator.formatDistance(beacon.estimatedDistanceMeters),
                         proximity = DistanceEstimator.proximityLabel(beacon.estimatedDistanceMeters),
                         address = beacon.deviceAddress,
+                    )
+                }
+            }
+
+            if (state.showAllBleDevices && state.nearbyBleDevices.isNotEmpty()) {
+                item {
+                    Text(
+                        "Nearby BLE advertisements",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = ComposeModifierAlias.padding(top = 8.dp),
+                    )
+                }
+                items(
+                    items = state.nearbyBleDevices,
+                    key = { "ble-${it.deviceAddress}" },
+                ) { device ->
+                    val companies = if (device.manufacturerCompanyIds.isEmpty()) {
+                        "no mfr data"
+                    } else {
+                        device.manufacturerCompanyIds.joinToString { "0x%04X".format(it) }
+                    }
+                    StatusBanner(
+                        message = "${device.name ?: "unnamed"} · ${device.deviceAddress}\n" +
+                            "${device.rssi} dBm · $companies",
+                        isError = false,
                     )
                 }
             }

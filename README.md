@@ -109,6 +109,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 On first launch, grant **Nearby devices / Bluetooth** and **Location** permissions when prompted.
 
+**If Receiver shows “Scanning…” but lists nothing:**
+1. Turn **Location** ON in Android system settings (required for BLE results on most phones).
+2. Use **two phones** — a phone usually cannot see its own advertisements.
+3. Watch the counters (`ads heard` / `BLE devices`). If ads stay at 0, permissions/Location are the issue; if ads rise but iBeacons stay 0, try Transmitter **Compatible company ID**.
+4. Reinstall after updating so the app no longer declares `BLUETOOTH_SCAN` with `neverForLocation` (that flag emptied scans on many devices).
+
 ---
 
 ## How to use both modes

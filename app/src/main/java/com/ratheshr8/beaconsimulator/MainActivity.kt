@@ -140,6 +140,7 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                     onMinorChange = viewModel::updateMinor,
                     onTxPowerChange = viewModel::updateTxPower,
                     onEddystoneChange = viewModel::updateIncludeEddystone,
+                    onCompatCompanyIdChange = viewModel::updateUseCompatCompanyId,
                     onToggleAdvertise = {
                         if (!BlePermissions.hasAll(viewModel.getApplication())) {
                             permissionLauncher.launch(BlePermissions.requiredPermissions())
@@ -165,6 +166,7 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                         }
                     },
                     onClear = viewModel::clearScanResults,
+                    onShowAllBleChange = viewModel::updateShowAllBleDevices,
                     onCreateBlankPlan = viewModel::createBlankFloorPlan,
                     onImportPlanImage = viewModel::importFloorPlanImage,
                     onSelectPlan = viewModel::selectFloorPlan,

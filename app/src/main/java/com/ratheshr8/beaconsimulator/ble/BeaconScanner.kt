@@ -7,8 +7,11 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
+import android.util.SparseArray
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 data class ScannedBeacon(
     val deviceAddress: String,
@@ -21,10 +24,25 @@ data class ScannedBeacon(
     val lastSeenEpochMs: Long,
 )
 
+data class NearbyBleDevice(
+    val deviceAddress: String,
+    val name: String?,
+    val rssi: Int,
+    val hasManufacturerData: Boolean,
+    val manufacturerCompanyIds: List<Int>,
+    val lastSeenEpochMs: Long,
+)
+
 data class ScanFilterConfig(
     val uuid: UUID? = null,
     val major: Int? = null,
     val minor: Int? = null,
+)
+
+data class ScanStats(
+    val rawAdvertisementCount: Int = 0,
+    val uniqueDevicesSeen: Int = 0,
+    val iBeaconCount: Int = 0,
 )
 
 class BeaconScanner(context: Context) {
@@ -34,10 +52,12 @@ class BeaconScanner(context: Context) {
     private val adapter: BluetoothAdapter? get() = bluetoothManager.adapter
 
     private val beacons = ConcurrentHashMap<String, ScannedBeacon>()
+    private val nearby = ConcurrentHashMap<String, NearbyBleDevice>()
+    private val rawAdCount = AtomicInteger(0)
     private var scanCallback: ScanCallback? = null
     private var scanning = false
     private var filter = ScanFilterConfig()
-    private var listener: ((List<ScannedBeacon>) -> Unit)? = null
+    private var listener: ((List<ScannedBeacon>, List<NearbyBleDevice>, ScanStats) -> Unit)? = null
 
     fun isBluetoothEnabled(): Boolean = adapter?.isEnabled == true
     fun isScanning(): Boolean = scanning
@@ -47,7 +67,7 @@ class BeaconScanner(context: Context) {
         emit()
     }
 
-    fun setListener(listener: ((List<ScannedBeacon>) -> Unit)?) {
+    fun setListener(listener: ((List<ScannedBeacon>, List<NearbyBleDevice>, ScanStats) -> Unit)?) {
         this.listener = listener
         emit()
     }
@@ -67,10 +87,16 @@ class BeaconScanner(context: Context) {
             return
         }
 
-        val settings = ScanSettings.Builder()
+        val settingsBuilder = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setReportDelay(0)
-            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            settingsBuilder
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+        }
+        val settings = settingsBuilder.build()
 
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult?) {
@@ -83,14 +109,16 @@ class BeaconScanner(context: Context) {
 
             override fun onScanFailed(errorCode: Int) {
                 scanning = false
-                onError("Scan failed (errorCode=$errorCode)")
+                onError(scanFailureMessage(errorCode))
             }
         }
 
         scanCallback = callback
         try {
+            // null filters = hear everything (needed to diagnose empty iBeacon lists)
             scanner.startScan(null, settings, callback)
             scanning = true
+            emit()
         } catch (security: SecurityException) {
             scanning = false
             onError("Missing BLUETOOTH_SCAN / location permission: ${security.message}")
@@ -113,18 +141,35 @@ class BeaconScanner(context: Context) {
 
     fun clear() {
         beacons.clear()
+        nearby.clear()
+        rawAdCount.set(0)
         emit()
     }
 
+    @SuppressLint("MissingPermission")
     private fun handleResult(result: ScanResult) {
-        val record = result.scanRecord ?: return
-        val payload = record.getManufacturerSpecificData(IBeaconPacket.APPLE_COMPANY_ID)
-        val parsed = IBeaconPacket.parseManufacturerPayload(payload) ?: return
+        rawAdCount.incrementAndGet()
+        val address = result.device?.address ?: return
+        val record = result.scanRecord
+        val companyIds = manufacturerCompanyIds(record?.manufacturerSpecificData)
+        nearby[address] = NearbyBleDevice(
+            deviceAddress = address,
+            name = record?.deviceName ?: result.device?.name,
+            rssi = result.rssi,
+            hasManufacturerData = companyIds.isNotEmpty(),
+            manufacturerCompanyIds = companyIds,
+            lastSeenEpochMs = System.currentTimeMillis(),
+        )
 
-        val key = "${parsed.uuid}|${parsed.major}|${parsed.minor}|${result.device.address}"
+        val parsed = parseIBeacon(record) ?: run {
+            emit()
+            return
+        }
+
+        val key = "${parsed.uuid}|${parsed.major}|${parsed.minor}|$address"
         val distance = DistanceEstimator.estimateMeters(result.rssi, parsed.txPower)
         beacons[key] = ScannedBeacon(
-            deviceAddress = result.device.address ?: "unknown",
+            deviceAddress = address,
             uuid = parsed.uuid,
             major = parsed.major,
             minor = parsed.minor,
@@ -136,14 +181,52 @@ class BeaconScanner(context: Context) {
         emit()
     }
 
+    private fun parseIBeacon(record: android.bluetooth.le.ScanRecord?): IBeaconPacket.Parsed? {
+        if (record == null) return null
+
+        // 1) Direct Apple company ID lookup
+        IBeaconPacket.parseManufacturerPayload(
+            record.getManufacturerSpecificData(IBeaconPacket.APPLE_COMPANY_ID)
+        )?.let { return it }
+
+        // 2) Any manufacturer blob that looks like iBeacon (OEM may remap company ID)
+        val sparse = record.manufacturerSpecificData
+        if (sparse != null) {
+            for (i in 0 until sparse.size()) {
+                IBeaconPacket.parseManufacturerPayload(sparse.valueAt(i))?.let { return it }
+            }
+        }
+
+        // 3) Raw AD bytes walk
+        return IBeaconPacket.parseFromRawScanRecord(record.bytes)
+    }
+
+    private fun manufacturerCompanyIds(sparse: SparseArray<ByteArray>?): List<Int> {
+        if (sparse == null || sparse.size() == 0) return emptyList()
+        return buildList {
+            for (i in 0 until sparse.size()) add(sparse.keyAt(i))
+        }
+    }
+
     private fun emit() {
-        val snapshot = beacons.values
+        val beaconSnapshot = beacons.values
             .filter { matchesFilter(it) }
             .sortedWith(
                 compareByDescending<ScannedBeacon> { it.lastSeenEpochMs }
                     .thenByDescending { it.rssi }
             )
-        listener?.invoke(snapshot)
+        val nearbySnapshot = nearby.values
+            .sortedWith(
+                compareByDescending<NearbyBleDevice> { it.lastSeenEpochMs }
+                    .thenByDescending { it.rssi }
+            )
+            .take(40)
+        val stats = ScanStats(
+            rawAdvertisementCount = rawAdCount.get(),
+            uniqueDevicesSeen = nearby.size,
+            iBeaconCount = beaconSnapshot.size,
+        )
+        listener?.invoke(beaconSnapshot, nearbySnapshot, stats)
     }
 
     private fun matchesFilter(beacon: ScannedBeacon): Boolean {
@@ -152,5 +235,15 @@ class BeaconScanner(context: Context) {
         if (f.major != null && beacon.major != f.major) return false
         if (f.minor != null && beacon.minor != f.minor) return false
         return true
+    }
+
+    private fun scanFailureMessage(errorCode: Int): String = when (errorCode) {
+        ScanCallback.SCAN_FAILED_ALREADY_STARTED -> "Scan already started"
+        ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED ->
+            "Scan registration failed — toggle Bluetooth and retry"
+        ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED -> "BLE scanning unsupported"
+        ScanCallback.SCAN_FAILED_INTERNAL_ERROR -> "Bluetooth stack internal error"
+        ScanCallback.SCAN_FAILED_OUT_OF_HARDWARE_RESOURCES -> "Out of BLE hardware resources"
+        else -> "Scan failed (errorCode=$errorCode)"
     }
 }

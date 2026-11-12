@@ -36,6 +36,7 @@ fun TransmitterScreen(
     onMinorChange: (String) -> Unit,
     onTxPowerChange: (String) -> Unit,
     onEddystoneChange: (Boolean) -> Unit,
+    onCompatCompanyIdChange: (Boolean) -> Unit,
     onToggleAdvertise: () -> Unit,
 ) {
     Column(
@@ -113,6 +114,17 @@ fun TransmitterScreen(
             )
             Text(
                 text = "Also advertise Eddystone-UID in scan response",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = state.useCompatCompanyId,
+                onCheckedChange = onCompatCompanyIdChange,
+                enabled = !state.isAdvertising,
+            )
+            Text(
+                text = "Compatible company ID (if Apple 0x004C is filtered by OEM)",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
