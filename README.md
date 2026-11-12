@@ -6,6 +6,16 @@ Android app that simulates both a **BLE beacon transmitter** and a **BLE receive
 **Min SDK:** 26 (Android 8.0) · **Target / Compile SDK:** 34  
 **UI:** Kotlin + Jetpack Compose (Material 3)
 
+### Download APK (no build required)
+
+Get the prebuilt debug APK from GitHub Releases:
+
+**https://github.com/ratheshr8/beacon-simulator/releases/latest**
+
+Asset: `beacon-simulator-1.0.0-debug.apk`  
+Install: open the file on your phone, or `adb install -r beacon-simulator-1.0.0-debug.apk`  
+(Allow install from unknown sources / “Install unknown apps” if Android asks.)
+
 ---
 
 ## Modes
