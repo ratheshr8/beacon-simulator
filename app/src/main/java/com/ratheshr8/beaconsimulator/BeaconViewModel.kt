@@ -28,6 +28,8 @@ import kotlin.math.sqrt
 import com.ratheshr8.beaconsimulator.net.BeaconForwarder
 import com.ratheshr8.beaconsimulator.net.ForwardResult
 import com.ratheshr8.beaconsimulator.permissions.BlePermissions
+import com.ratheshr8.beaconsimulator.sync.PeerSighting
+import com.ratheshr8.beaconsimulator.sync.ReceiverPeerSync
 import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -84,6 +86,9 @@ data class UiState(
     val userLocationEstimate: UserLocationEstimate? = null,
     val liveMoveTrackedBeacon: Boolean = true,
     val receiverPin: Point2d? = null,
+    val receiverSyncEnabled: Boolean = false,
+    val peerSightings: List<PeerSighting> = emptyList(),
+    val receiverDisplayName: String = "Receiver",
 )
 
 private const val DEFAULT_UUID = "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"
@@ -95,7 +100,9 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     private val forwarder = BeaconForwarder()
     private val floorPlanStore = FloorPlanStore(application)
     private val deviceNameStore = DeviceNameStore(application)
+    private val peerSync = ReceiverPeerSync(application)
     private var forwardJob: Job? = null
+    private var smoothedDistance: Double? = null
 
     private val _state = MutableStateFlow(
         UiState(
@@ -128,6 +135,12 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             }
             recomputeFloorPlanOverlay()
         }
+
+        peerSync.setListener { peers ->
+            _state.update { it.copy(peerSightings = peers) }
+            recomputeFloorPlanOverlay()
+        }
+        peerSync.setPayloadFactory { buildLocalPeerSighting() }
     }
 
     fun refreshHardwareState() {
@@ -272,6 +285,28 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateLiveMoveTrackedBeacon(enabled: Boolean) {
         _state.update { it.copy(liveMoveTrackedBeacon = enabled) }
+    }
+
+    fun updateReceiverDisplayName(value: String) {
+        _state.update { it.copy(receiverDisplayName = value.ifBlank { "Receiver" }) }
+    }
+
+    fun updateReceiverSyncEnabled(enabled: Boolean) {
+        _state.update { it.copy(receiverSyncEnabled = enabled) }
+        if (enabled) {
+            if (_state.value.receiverPin == null) {
+                setStatus(
+                    "Set a Receiver pin on the floor plan (long-press in Locate) before sync helps.",
+                    error = true,
+                )
+            }
+            peerSync.start()
+            setStatus("Receiver Wi‑Fi sync ON — other receivers on the same Wi‑Fi will share distances", error = false)
+        } else {
+            peerSync.stop()
+            _state.update { it.copy(peerSightings = emptyList()) }
+            setStatus("Receiver Wi‑Fi sync OFF", error = false)
+        }
     }
 
     fun setReceiverPin(x: Float, y: Float) {
@@ -527,40 +562,102 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Move the paired beacon marker along the ray from the receiver pin (or You)
-     * so map distance matches the latest RSSI estimate — reflects transmitter motion.
+     * Place the paired transmitter using multilateration from this phone's pin
+     * plus other receivers' shared distances (Wi‑Fi sync). Falls back to a single
+     * ray if only one receiver pin/distance is available.
      */
     private fun maybeLiveMoveTrackedBeacon(plan: FloorPlan, state: UiState): FloorPlan? {
         val paired = state.pairedIdentity ?: return null
-        val scan = state.scannedBeacons.firstOrNull {
-            it.uuid == paired.uuid && it.major == paired.major && it.minor == paired.minor
-        } ?: return null
-        val meters = scan.estimatedDistanceMeters ?: return null
-        val origin = state.receiverPin ?: state.userLocationEstimate?.point ?: Point2d(0.5f, 0.5f)
         val target = plan.beacons.firstOrNull {
             it.uuid == paired.uuid && it.major == paired.major && it.minor == paired.minor
         } ?: return null
 
-        val dx = target.x - origin.x
-        val dy = target.y - origin.y
-        val currentNorm = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-4f)
-        val desiredNorm = Trilateration.metersToNormalized(meters, plan.widthMeters)
-        val scale = desiredNorm / currentNorm
-        val newX = (origin.x + dx * scale).coerceIn(0.02f, 0.98f)
-        val newY = (origin.y + dy * scale).coerceIn(0.02f, 0.98f)
-        if (kotlin.math.abs(newX - target.x) < 0.004f && kotlin.math.abs(newY - target.y) < 0.004f) {
+        val anchors = mutableListOf<Trilateration.Anchor>()
+
+        val localScan = state.scannedBeacons.firstOrNull {
+            it.uuid == paired.uuid && it.major == paired.major && it.minor == paired.minor
+        }
+        val localMeters = localScan?.estimatedDistanceMeters?.let { smoothDistance(it) }
+        val localPin = state.receiverPin
+        if (localPin != null && localMeters != null) {
+            anchors += Trilateration.Anchor(
+                x = localPin.x,
+                y = localPin.y,
+                radius = Trilateration.metersToNormalized(localMeters, plan.widthMeters),
+            )
+        }
+
+        val beaconKey = paired.stableKey()
+        state.peerSightings
+            .filter { it.beaconKey == beaconKey }
+            .filter { it.planId == null || it.planId == plan.id }
+            .forEach { peer ->
+                anchors += Trilateration.Anchor(
+                    x = peer.pinX,
+                    y = peer.pinY,
+                    radius = Trilateration.metersToNormalized(peer.distanceMeters, plan.widthMeters),
+                )
+            }
+
+        val newPoint = when {
+            anchors.size >= 2 -> Trilateration.estimate(anchors)
+            anchors.size == 1 -> {
+                val origin = Point2d(anchors[0].x, anchors[0].y)
+                val dx = target.x - origin.x
+                val dy = target.y - origin.y
+                val currentNorm = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-4f)
+                val scale = anchors[0].radius / currentNorm
+                Point2d(
+                    (origin.x + dx * scale).coerceIn(0.02f, 0.98f),
+                    (origin.y + dy * scale).coerceIn(0.02f, 0.98f),
+                )
+            }
+            else -> null
+        } ?: return null
+
+        if (kotlin.math.abs(newPoint.x - target.x) < 0.004f &&
+            kotlin.math.abs(newPoint.y - target.y) < 0.004f
+        ) {
             return null
         }
 
         val updatedBeacons = plan.beacons.map {
-            if (it.id == target.id) it.copy(x = newX, y = newY) else it
+            if (it.id == target.id) it.copy(x = newPoint.x, y = newPoint.y) else it
         }
         val updatedPlan = plan.copy(beacons = updatedBeacons)
         val plans = state.floorPlans.map { if (it.id == plan.id) updatedPlan else it }
-        // Persist lightly so restarts keep last known tracked spot
         floorPlanStore.saveAll(plans)
         _state.update { it.copy(floorPlans = plans) }
         return updatedPlan
+    }
+
+    private fun smoothDistance(rawMeters: Double): Double {
+        val prev = smoothedDistance
+        val next = if (prev == null) rawMeters else prev * 0.7 + rawMeters * 0.3
+        smoothedDistance = next
+        return next
+    }
+
+    private fun buildLocalPeerSighting(): PeerSighting? {
+        val state = _state.value
+        if (!state.receiverSyncEnabled) return null
+        val paired = state.pairedIdentity ?: return null
+        val pin = state.receiverPin ?: return null
+        val scan = state.scannedBeacons.firstOrNull {
+            it.uuid == paired.uuid && it.major == paired.major && it.minor == paired.minor
+        } ?: return null
+        val meters = scan.estimatedDistanceMeters?.let { smoothDistance(it) } ?: return null
+        return PeerSighting(
+            receiverId = peerSync.localReceiverId,
+            label = state.receiverDisplayName,
+            planId = state.selectedFloorPlanId,
+            pinX = pin.x,
+            pinY = pin.y,
+            beaconKey = paired.stableKey(),
+            rssi = scan.rssi,
+            distanceMeters = meters,
+            timestampMs = System.currentTimeMillis(),
+        )
     }
 
     // endregion
@@ -739,9 +836,11 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         stopForwardLoop()
+        peerSync.stop()
         advertiser.stop()
         scanner.stop()
         scanner.setListener(null)
+        peerSync.setListener(null)
         super.onCleared()
     }
 

@@ -68,6 +68,8 @@ fun FloorPlanScreen(
     onLiveMoveChange: (Boolean) -> Unit,
     onSetReceiverPin: (Float, Float) -> Unit,
     onBeaconDrag: (String, Float, Float) -> Unit,
+    onReceiverSyncChange: (Boolean) -> Unit,
+    onReceiverNameChange: (String) -> Unit,
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var createModeImport by remember { mutableStateOf(false) }
@@ -220,13 +222,40 @@ fun FloorPlanScreen(
                 ) {
                     Text(if (state.isScanning) "Stop scan" else "Start scan to locate")
                 }
+                OutlinedTextField(
+                    value = state.receiverDisplayName,
+                    onValueChange = onReceiverNameChange,
+                    modifier = ComposeModifierAlias.fillMaxWidth(),
+                    label = { Text("This receiver’s name") },
+                    singleLine = true,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = state.receiverSyncEnabled,
+                        onCheckedChange = onReceiverSyncChange,
+                    )
+                    Text(
+                        "Share distances with other receivers (same Wi‑Fi)",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Text(
+                    text = if (state.receiverSyncEnabled) {
+                        "Peers online: ${state.peerSightings.size} · " +
+                            "Need 2+ receiver pins for accurate transmitter tracking"
+                    } else {
+                        "Enable sync on every receiver phone. Long-press the map to set each phone’s pin."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = state.liveMoveTrackedBeacon,
                         onCheckedChange = onLiveMoveChange,
                     )
                     Text(
-                        "Live-move paired transmitter on map from RSSI",
+                        "Live-move paired transmitter using shared distances",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -242,6 +271,9 @@ fun FloorPlanScreen(
                     null
                 },
                 receiverPin = state.receiverPin,
+                peerSightings = state.peerSightings.filter {
+                    state.pairedIdentity == null || it.beaconKey == state.pairedIdentity.stableKey()
+                },
                 trackedBeaconKey = state.pairedIdentity?.stableKey(),
                 allowDragBeacons = state.floorPlanTool == FloorPlanTool.PLACE,
                 onTapNormalized = { x, y ->

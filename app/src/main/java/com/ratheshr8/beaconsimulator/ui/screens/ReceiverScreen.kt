@@ -79,6 +79,8 @@ fun ReceiverScreen(
     onLiveMoveChange: (Boolean) -> Unit,
     onSetReceiverPin: (Float, Float) -> Unit,
     onBeaconDrag: (String, Float, Float) -> Unit,
+    onReceiverSyncChange: (Boolean) -> Unit,
+    onReceiverNameChange: (String) -> Unit,
     onCreateBlankPlan: (String, Float) -> Unit,
     onImportPlanImage: (Uri, String, Float) -> Unit,
     onSelectPlan: (String) -> Unit,
@@ -144,6 +146,8 @@ fun ReceiverScreen(
                 onLiveMoveChange = onLiveMoveChange,
                 onSetReceiverPin = onSetReceiverPin,
                 onBeaconDrag = onBeaconDrag,
+                onReceiverSyncChange = onReceiverSyncChange,
+                onReceiverNameChange = onReceiverNameChange,
             )
         }
     }

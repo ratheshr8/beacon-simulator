@@ -185,6 +185,8 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                     onLiveMoveChange = viewModel::updateLiveMoveTrackedBeacon,
                     onSetReceiverPin = viewModel::setReceiverPin,
                     onBeaconDrag = viewModel::movePlacedBeacon,
+                    onReceiverSyncChange = viewModel::updateReceiverSyncEnabled,
+                    onReceiverNameChange = viewModel::updateReceiverDisplayName,
                     onCreateBlankPlan = viewModel::createBlankFloorPlan,
                     onImportPlanImage = viewModel::importFloorPlanImage,
                     onSelectPlan = viewModel::selectFloorPlan,

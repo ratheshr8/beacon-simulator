@@ -87,8 +87,15 @@ Receiver → **Floor plan** tab:
 
 1. **New blank** or **From photo** — create a plan and set its real-world width in meters.
 2. **Place beacon** — tap to place; **drag** markers to reposition after a transmitter moves.
-3. **Locate** — start scanning. Long-press to set a **Receiver pin**. Enable **Live-move paired transmitter** so the ★ marker tracks RSSI distance changes on the map.
-4. With **2+** placed beacons in range, the app can also estimate **your** position (approximate indoors).
+3. **Locate** — start scanning. Long-press to set a **Receiver pin**.
+4. For accurate transmitter tracking, use **2+ receiver phones** on the **same Wi‑Fi**:
+   - QR-pair each to the same transmitter
+   - Long-press to set each phone’s pin on the **same floor plan**
+   - Enable **Share distances with other receivers**
+   - Enable **Live-move paired transmitter** — the ★ marker is multilaterated from shared RSSI distances
+5. With **2+** placed fixed beacons in range, the app can also estimate **your** position (separate from transmitter tracking).
+
+**Note:** One receiver alone only knows distance (a ring), not a unique map point. Accuracy improves with more receivers and careful pin placement; RSSI indoors is still approximate.
 
 ---
 

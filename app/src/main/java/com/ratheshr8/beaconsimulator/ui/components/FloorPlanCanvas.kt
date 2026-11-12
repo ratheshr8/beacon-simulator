@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import com.ratheshr8.beaconsimulator.floorplan.LocatedBeaconStatus
 import com.ratheshr8.beaconsimulator.floorplan.Point2d
 import com.ratheshr8.beaconsimulator.floorplan.Trilateration
+import com.ratheshr8.beaconsimulator.sync.PeerSighting
 import com.ratheshr8.beaconsimulator.ui.theme.OceanDeep
 import com.ratheshr8.beaconsimulator.ui.theme.SignalAmber
 import com.ratheshr8.beaconsimulator.ui.theme.SignalTeal
@@ -49,6 +50,7 @@ fun FloorPlanCanvas(
     beaconStatuses: List<LocatedBeaconStatus>,
     userLocation: Point2d?,
     receiverPin: Point2d?,
+    peerSightings: List<PeerSighting>,
     trackedBeaconKey: String?,
     allowDragBeacons: Boolean,
     onTapNormalized: (Float, Float) -> Unit,
@@ -162,12 +164,60 @@ fun FloorPlanCanvas(
                 drawCircle(color = Color(0xFF5B2C6F), radius = 14f, center = Offset(px, py))
                 drawCircle(color = Color.White, radius = 5f, center = Offset(px, py))
                 val label = textMeasurer.measure(
-                    text = "Receiver",
+                    text = "You (recv)",
                     style = TextStyle(fontSize = 11.sp, color = Color(0xFF5B2C6F)),
                 )
                 drawText(
                     textLayoutResult = label,
                     topLeft = Offset(px - label.size.width / 2f, py - with(density) { 22.dp.toPx() }),
+                )
+                // Local range ring toward tracked transmitter
+                trackedBeaconKey?.let { key ->
+                    beaconStatuses.firstOrNull {
+                        "${it.placed.uuid.toString().uppercase()}|${it.placed.major}|${it.placed.minor}" == key
+                    }?.distanceMeters?.let { meters ->
+                        val radiusPx =
+                            Trilateration.metersToNormalized(meters, planWidthMeters) * size.width
+                        drawCircle(
+                            color = Color(0xFF5B2C6F).copy(alpha = 0.12f),
+                            radius = radiusPx,
+                            center = Offset(px, py),
+                        )
+                        drawCircle(
+                            color = Color(0xFF5B2C6F).copy(alpha = 0.45f),
+                            radius = radiusPx,
+                            center = Offset(px, py),
+                            style = Stroke(width = 2f),
+                        )
+                    }
+                }
+            }
+
+            peerSightings.forEach { peer ->
+                val px = peer.pinX * size.width
+                val py = peer.pinY * size.height
+                drawCircle(color = Color(0xFF1A5276), radius = 12f, center = Offset(px, py))
+                drawCircle(color = Color.White, radius = 4f, center = Offset(px, py))
+                val radiusPx =
+                    Trilateration.metersToNormalized(peer.distanceMeters, planWidthMeters) * size.width
+                drawCircle(
+                    color = Color(0xFF1A5276).copy(alpha = 0.10f),
+                    radius = radiusPx,
+                    center = Offset(px, py),
+                )
+                drawCircle(
+                    color = Color(0xFF1A5276).copy(alpha = 0.4f),
+                    radius = radiusPx,
+                    center = Offset(px, py),
+                    style = Stroke(width = 2f),
+                )
+                val label = textMeasurer.measure(
+                    text = peer.label,
+                    style = TextStyle(fontSize = 10.sp, color = Color(0xFF1A5276)),
+                )
+                drawText(
+                    textLayoutResult = label,
+                    topLeft = Offset(px - label.size.width / 2f, py - with(density) { 20.dp.toPx() }),
                 )
             }
 
