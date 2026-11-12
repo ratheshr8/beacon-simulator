@@ -150,6 +150,7 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                 )
                 AppMode.RECEIVER -> ReceiverScreen(
                     state = state,
+                    onReceiverTabChange = viewModel::setReceiverTab,
                     onFilterUuidChange = viewModel::updateFilterUuid,
                     onFilterMajorChange = viewModel::updateFilterMajor,
                     onFilterMinorChange = viewModel::updateFilterMinor,
@@ -164,6 +165,16 @@ fun BeaconSimulatorApp(viewModel: BeaconViewModel) {
                         }
                     },
                     onClear = viewModel::clearScanResults,
+                    onCreateBlankPlan = viewModel::createBlankFloorPlan,
+                    onImportPlanImage = viewModel::importFloorPlanImage,
+                    onSelectPlan = viewModel::selectFloorPlan,
+                    onDeletePlan = viewModel::deleteFloorPlan,
+                    onWidthMetersChange = viewModel::updateFloorPlanWidthText,
+                    onToolChange = viewModel::setFloorPlanTool,
+                    onMapTap = viewModel::onFloorPlanTap,
+                    onConfirmPlaceBeacon = viewModel::confirmPlaceBeacon,
+                    onCancelPlace = viewModel::cancelPlaceBeacon,
+                    onDeleteBeacon = viewModel::deletePlacedBeacon,
                 )
             }
         }

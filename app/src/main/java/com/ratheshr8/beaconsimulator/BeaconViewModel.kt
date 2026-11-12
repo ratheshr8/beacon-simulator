@@ -1,6 +1,7 @@
 package com.ratheshr8.beaconsimulator
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ratheshr8.beaconsimulator.ble.AdvertiseConfig
@@ -10,6 +11,14 @@ import com.ratheshr8.beaconsimulator.ble.BeaconScanner
 import com.ratheshr8.beaconsimulator.ble.IBeaconPacket
 import com.ratheshr8.beaconsimulator.ble.ScanFilterConfig
 import com.ratheshr8.beaconsimulator.ble.ScannedBeacon
+import com.ratheshr8.beaconsimulator.floorplan.FloorPlan
+import com.ratheshr8.beaconsimulator.floorplan.FloorPlanStore
+import com.ratheshr8.beaconsimulator.floorplan.FloorPlanTool
+import com.ratheshr8.beaconsimulator.floorplan.LocatedBeaconStatus
+import com.ratheshr8.beaconsimulator.floorplan.PlacedBeacon
+import com.ratheshr8.beaconsimulator.floorplan.ReceiverTab
+import com.ratheshr8.beaconsimulator.floorplan.Trilateration
+import com.ratheshr8.beaconsimulator.floorplan.UserLocationEstimate
 import com.ratheshr8.beaconsimulator.net.BeaconForwarder
 import com.ratheshr8.beaconsimulator.net.ForwardResult
 import java.util.UUID
@@ -36,7 +45,7 @@ data class UiState(
     val bluetoothEnabled: Boolean = true,
     val statusMessage: String? = null,
     val isError: Boolean = false,
-    // Receiver
+    // Receiver scan
     val filterUuidText: String = "",
     val filterMajorText: String = "",
     val filterMinorText: String = "",
@@ -46,6 +55,15 @@ data class UiState(
     val forwardEnabled: Boolean = false,
     val lastForwardStatus: String? = null,
     val lastForwardWasError: Boolean = false,
+    // Receiver floor plan
+    val receiverTab: ReceiverTab = ReceiverTab.SCAN,
+    val floorPlans: List<FloorPlan> = emptyList(),
+    val selectedFloorPlanId: String? = null,
+    val floorPlanTool: FloorPlanTool = FloorPlanTool.VIEW,
+    val floorPlanWidthText: String = "20",
+    val pendingPlace: Pair<Float, Float>? = null,
+    val locatedBeaconStatuses: List<LocatedBeaconStatus> = emptyList(),
+    val userLocationEstimate: UserLocationEstimate? = null,
 )
 
 private const val DEFAULT_UUID = "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"
@@ -55,6 +73,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     private val advertiser = BeaconAdvertiser(application)
     private val scanner = BeaconScanner(application)
     private val forwarder = BeaconForwarder()
+    private val floorPlanStore = FloorPlanStore(application)
     private var forwardJob: Job? = null
 
     private val _state = MutableStateFlow(
@@ -66,8 +85,19 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     init {
+        val plans = floorPlanStore.loadAll()
+        _state.update {
+            it.copy(
+                floorPlans = plans,
+                selectedFloorPlanId = plans.firstOrNull()?.id,
+                floorPlanWidthText = plans.firstOrNull()?.widthMeters?.toString() ?: "20",
+            )
+        }
+        recomputeFloorPlanOverlay()
+
         scanner.setListener { beacons ->
             _state.update { it.copy(scannedBeacons = beacons) }
+            recomputeFloorPlanOverlay()
         }
     }
 
@@ -88,6 +118,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             stopAdvertising()
         }
         _state.update { it.copy(mode = mode, statusMessage = null, isError = false) }
+    }
+
+    fun setReceiverTab(tab: ReceiverTab) {
+        _state.update { it.copy(receiverTab = tab) }
     }
 
     fun updateUuid(value: String) = _state.update { it.copy(uuidText = value) }
@@ -132,14 +166,178 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearScanResults() {
         scanner.clear()
+        recomputeFloorPlanOverlay()
         setStatus("Scan list cleared", error = false)
     }
 
     fun sendNow() {
-        viewModelScope.launch {
-            postSnapshot(force = true)
+        viewModelScope.launch { postSnapshot(force = true) }
+    }
+
+    // region Floor plan
+
+    fun createBlankFloorPlan(name: String, widthMeters: Float) {
+        val plan = FloorPlan(name = name, widthMeters = widthMeters.coerceAtLeast(1f))
+        persistPlans(_state.value.floorPlans + plan, selectId = plan.id)
+        setStatus("Created floor plan “${plan.name}”", error = false)
+    }
+
+    fun importFloorPlanImage(uri: Uri, name: String, widthMeters: Float) {
+        val path = floorPlanStore.importImage(uri)
+        if (path == null) {
+            setStatus("Could not import floor plan image", error = true)
+            return
+        }
+        val plan = FloorPlan(
+            name = name,
+            imagePath = path,
+            widthMeters = widthMeters.coerceAtLeast(1f),
+        )
+        persistPlans(_state.value.floorPlans + plan, selectId = plan.id)
+        setStatus("Imported floor plan “${plan.name}”", error = false)
+    }
+
+    fun selectFloorPlan(id: String) {
+        val plan = _state.value.floorPlans.firstOrNull { it.id == id } ?: return
+        _state.update {
+            it.copy(
+                selectedFloorPlanId = id,
+                floorPlanWidthText = plan.widthMeters.toString(),
+                pendingPlace = null,
+            )
+        }
+        recomputeFloorPlanOverlay()
+    }
+
+    fun deleteFloorPlan(id: String) {
+        val current = _state.value.floorPlans
+        val doomed = current.firstOrNull { it.id == id }
+        floorPlanStore.deleteImage(doomed?.imagePath)
+        val remaining = current.filterNot { it.id == id }
+        persistPlans(remaining, selectId = remaining.firstOrNull()?.id)
+        setStatus("Deleted floor plan", error = false)
+    }
+
+    fun updateFloorPlanWidthText(value: String) {
+        _state.update { it.copy(floorPlanWidthText = value) }
+        val meters = value.toFloatOrNull() ?: return
+        updateSelectedPlan { it.copy(widthMeters = meters.coerceAtLeast(1f)) }
+        recomputeFloorPlanOverlay()
+    }
+
+    fun setFloorPlanTool(tool: FloorPlanTool) {
+        _state.update { it.copy(floorPlanTool = tool, pendingPlace = null) }
+        recomputeFloorPlanOverlay()
+    }
+
+    fun onFloorPlanTap(x: Float, y: Float) {
+        if (_state.value.floorPlanTool != FloorPlanTool.PLACE) return
+        if (_state.value.selectedFloorPlanId == null) {
+            setStatus("Create or select a floor plan first", error = true)
+            return
+        }
+        _state.update { it.copy(pendingPlace = x to y) }
+    }
+
+    fun cancelPlaceBeacon() {
+        _state.update { it.copy(pendingPlace = null) }
+    }
+
+    fun confirmPlaceBeacon(label: String, uuidText: String, major: Int, minor: Int) {
+        val pending = _state.value.pendingPlace ?: return
+        val uuid = IBeaconPacket.parseUuidOrNull(uuidText) ?: return
+        val placed = PlacedBeacon(
+            label = label,
+            uuid = uuid,
+            major = major,
+            minor = minor,
+            x = pending.first,
+            y = pending.second,
+        )
+        updateSelectedPlan { plan -> plan.copy(beacons = plan.beacons + placed) }
+        _state.update { it.copy(pendingPlace = null) }
+        recomputeFloorPlanOverlay()
+        setStatus("Placed “${placed.label}” on floor plan", error = false)
+    }
+
+    fun deletePlacedBeacon(beaconId: String) {
+        updateSelectedPlan { plan ->
+            plan.copy(beacons = plan.beacons.filterNot { it.id == beaconId })
+        }
+        recomputeFloorPlanOverlay()
+    }
+
+    private fun updateSelectedPlan(transform: (FloorPlan) -> FloorPlan) {
+        val id = _state.value.selectedFloorPlanId ?: return
+        val updated = _state.value.floorPlans.map { if (it.id == id) transform(it) else it }
+        persistPlans(updated, selectId = id)
+    }
+
+    private fun persistPlans(plans: List<FloorPlan>, selectId: String?) {
+        floorPlanStore.saveAll(plans)
+        val selected = plans.firstOrNull { it.id == selectId } ?: plans.firstOrNull()
+        _state.update {
+            it.copy(
+                floorPlans = plans,
+                selectedFloorPlanId = selected?.id,
+                floorPlanWidthText = selected?.widthMeters?.toString() ?: it.floorPlanWidthText,
+            )
+        }
+        recomputeFloorPlanOverlay()
+    }
+
+    private fun recomputeFloorPlanOverlay() {
+        val state = _state.value
+        val plan = state.floorPlans.firstOrNull { it.id == state.selectedFloorPlanId }
+        if (plan == null) {
+            _state.update {
+                it.copy(locatedBeaconStatuses = emptyList(), userLocationEstimate = null)
+            }
+            return
+        }
+
+        val statuses = plan.beacons.map { placed ->
+            val match = state.scannedBeacons.firstOrNull {
+                it.uuid == placed.uuid && it.major == placed.major && it.minor == placed.minor
+            }
+            LocatedBeaconStatus(
+                placed = placed,
+                detected = match != null,
+                rssi = match?.rssi,
+                distanceMeters = match?.estimatedDistanceMeters,
+            )
+        }
+
+        val anchors = statuses.mapNotNull { status ->
+            val meters = status.distanceMeters ?: return@mapNotNull null
+            Trilateration.Anchor(
+                x = status.placed.x,
+                y = status.placed.y,
+                radius = Trilateration.metersToNormalized(meters, plan.widthMeters),
+            )
+        }
+
+        val estimate = if (anchors.size >= 2) {
+            Trilateration.estimate(anchors)?.let { point ->
+                UserLocationEstimate(
+                    point = point,
+                    confidence = (anchors.size / 3f).coerceAtMost(1f),
+                    usedBeaconCount = anchors.size,
+                )
+            }
+        } else {
+            null
+        }
+
+        _state.update {
+            it.copy(
+                locatedBeaconStatuses = statuses,
+                userLocationEstimate = estimate,
+            )
         }
     }
+
+    // endregion
 
     private fun startAdvertising() {
         refreshHardwareState()
@@ -258,8 +456,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        val beacons = current.scannedBeacons
-        when (val result = forwarder.postBeacons(url, beacons)) {
+        when (val result = forwarder.postBeacons(url, current.scannedBeacons)) {
             is ForwardResult.Success -> {
                 _state.update {
                     it.copy(
