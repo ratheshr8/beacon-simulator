@@ -5,11 +5,14 @@ Next.js web app that receives Beacon Simulator webhooks and plots **live floor t
 ## Run locally
 
 ```bash
+cp .env.example .env.local   # optional; see comments in the file
 npm install
 npm run dev
 ```
 
 Open the app, click **Load sample path** to preview, or paste the shown ingest URL into Android Receiver → Forward URL.
+
+Env vars are documented in [`.env.example`](./.env.example) (`INGEST_TOKEN`, optional `DATABASE_URL`).
 
 ## Ingest API
 
