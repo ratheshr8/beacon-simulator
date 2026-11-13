@@ -27,6 +27,7 @@ import com.ratheshr8.beaconsimulator.floorplan.UserLocationEstimate
 import kotlin.math.sqrt
 import com.ratheshr8.beaconsimulator.net.BeaconForwarder
 import com.ratheshr8.beaconsimulator.net.ForwardResult
+import com.ratheshr8.beaconsimulator.net.LocationBeaconPayload
 import com.ratheshr8.beaconsimulator.permissions.BlePermissions
 import com.ratheshr8.beaconsimulator.sync.PeerSighting
 import com.ratheshr8.beaconsimulator.sync.ReceiverPeerSync
@@ -628,6 +629,9 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
         val plans = state.floorPlans.map { if (it.id == plan.id) updatedPlan else it }
         floorPlanStore.saveAll(plans)
         _state.update { it.copy(floorPlans = plans) }
+        if (state.forwardEnabled && state.webhookUrl.isNotBlank()) {
+            viewModelScope.launch { postFloorLocations(force = true) }
+        }
         return updatedPlan
     }
 
@@ -813,6 +817,69 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
                 _state.update {
                     it.copy(
                         lastForwardStatus = "Forward failed: ${result.message}",
+                        lastForwardWasError = true,
+                    )
+                }
+            }
+        }
+        // Also push floor coordinates so Floorcast can plot movement paths.
+        postFloorLocations(force = force)
+    }
+
+    private suspend fun postFloorLocations(force: Boolean) {
+        val current = _state.value
+        if (!force && !current.forwardEnabled) return
+        val url = current.webhookUrl.trim()
+        if (url.isEmpty()) return
+        val plan = current.floorPlans.firstOrNull { it.id == current.selectedFloorPlanId } ?: return
+        if (plan.beacons.isEmpty()) return
+
+        val paired = current.pairedIdentity
+        val payloads = plan.beacons.map { placed ->
+            val scan = current.scannedBeacons.firstOrNull {
+                it.uuid == placed.uuid && it.major == placed.major && it.minor == placed.minor
+            }
+            val tracked = paired != null &&
+                placed.uuid == paired.uuid &&
+                placed.major == paired.major &&
+                placed.minor == paired.minor
+            LocationBeaconPayload(
+                label = placed.label,
+                uuid = placed.uuid,
+                major = placed.major,
+                minor = placed.minor,
+                x = placed.x,
+                y = placed.y,
+                tracked = tracked,
+                distanceMeters = scan?.estimatedDistanceMeters,
+                rssi = scan?.rssi,
+                confidence = current.userLocationEstimate?.confidence?.toDouble(),
+            )
+        }
+
+        when (
+            val result = forwarder.postLocations(
+                endpointUrl = url,
+                receiverId = peerSync.localReceiverId,
+                receiverName = current.receiverDisplayName,
+                plan = plan,
+                receiverPin = current.receiverPin,
+                beacons = payloads,
+            )
+        ) {
+            is ForwardResult.Success -> {
+                _state.update {
+                    it.copy(
+                        lastForwardStatus =
+                            "Forwarded map (${result.beaconCount} markers) → HTTP ${result.httpCode}",
+                        lastForwardWasError = false,
+                    )
+                }
+            }
+            is ForwardResult.Failure -> {
+                _state.update {
+                    it.copy(
+                        lastForwardStatus = "Map forward failed: ${result.message}",
                         lastForwardWasError = true,
                     )
                 }

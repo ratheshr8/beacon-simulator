@@ -73,7 +73,21 @@ In **Receiver** mode you can POST live scan results to any HTTP(S) webhook:
 }
 ```
 
-Use this to feed your existing backend, n8n/Zapier webhook, or another app without pairing to the BLE radio directly.
+Use this to feed your existing backend, n8n/Zapier webhook, **Floorcast** (`web/`), or another app without pairing to the BLE radio directly.
+
+### Floorcast web tracker (`web/`)
+
+Next.js app that receives receiver webhooks and plots live beacon positions + movement paths on a floor plan.
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open the shown URL, copy the **ingest URL** (includes `?token=`), paste it into the Android Receiver webhook field, enable forwarding, and enable floor-plan live-move. The map updates over SSE.
+
+Also accepts `event: "beacon_location"` payloads with normalized `x`/`y` (0..1), receiver pins, and plan metadata — emitted automatically by Beacon Simulator **v1.5.0+** when forwarding is on.
 
 ### QR pairing (recommended)
 
