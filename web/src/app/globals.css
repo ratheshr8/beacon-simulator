@@ -257,6 +257,90 @@ select {
   background: var(--accent);
 }
 
+.swatch.ring {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 1.5px dashed var(--accent-3);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.map-svg.tool-pin,
+.map-svg.tool-locate {
+  cursor: crosshair;
+}
+
+.map-hint {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-top: 1px solid var(--line);
+  color: var(--accent);
+  font-size: 0.82rem;
+}
+
+.map-label.muted {
+  fill: #a39b88;
+  font-size: 10px;
+}
+
+.tool-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+button.tool {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+  font-size: 0.8rem;
+  padding: 0.45rem 0.7rem;
+}
+
+button.tool.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1408;
+}
+
+.row-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.subhead {
+  margin: 0.85rem 0 0.35rem;
+  font-family: Syne, sans-serif;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.small {
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.list.compact li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.list.compact strong {
+  color: var(--ink);
+  display: block;
+}
+
+.hero-strip strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .path-line {
   stroke-dasharray: 4 0;
   animation: drawIn 1.1s ease both;

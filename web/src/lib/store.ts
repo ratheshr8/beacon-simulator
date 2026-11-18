@@ -1,13 +1,16 @@
 import { sql } from "./db";
 import { getIngestToken, isSampleMode } from "./auth";
 import { publish } from "./events";
+import { estimate, metersToNormalized } from "./trilateration";
 import {
   beaconKey,
   type BeaconScan,
   type DashboardState,
   type FloorPlan,
+  type LocateFix,
   type PlacedBeacon,
   type Receiver,
+  type ReceiverSighting,
   type TrackPoint,
 } from "./types";
 
@@ -20,6 +23,10 @@ function asIso(value: unknown): string {
 function num(value: unknown, fallback = 0): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp01(n: number): number {
+  return Math.min(0.98, Math.max(0.02, n));
 }
 
 export async function listFloorPlans(): Promise<FloorPlan[]> {
@@ -220,12 +227,210 @@ async function latestScans(): Promise<BeaconScan[]> {
   return payload.beacons;
 }
 
+/** Latest sighting per receiver for a plan (optionally one beacon). */
+export async function listLatestSightings(
+  planId: string,
+  beaconKeyFilter?: string | null,
+): Promise<ReceiverSighting[]> {
+  const rows = await sql<{
+    receiver_id: string;
+    receiver_name: string;
+    pin_x: number;
+    pin_y: number;
+    beacon_key: string;
+    label: string;
+    uuid: string;
+    major: number;
+    minor: number;
+    distance_meters: number;
+    rssi: number | null;
+    recorded_at: unknown;
+  }>(
+    `select
+       s.receiver_id,
+       coalesce(r.name, s.receiver_id) as receiver_name,
+       r.pin_x,
+       r.pin_y,
+       s.beacon_key,
+       s.label,
+       s.uuid,
+       s.major,
+       s.minor,
+       s.distance_meters,
+       s.rssi,
+       s.recorded_at
+     from sightings s
+     join receivers r on r.id = s.receiver_id
+     join (
+       select receiver_id, beacon_key, max(recorded_at) as max_at
+       from sightings
+       where plan_id = $1
+         and ($2::text is null or beacon_key = $2)
+         and recorded_at > now() - interval '30 minutes'
+       group by receiver_id, beacon_key
+     ) latest
+       on latest.receiver_id = s.receiver_id
+      and latest.beacon_key = s.beacon_key
+      and latest.max_at = s.recorded_at
+     where s.plan_id = $1
+       and r.pin_x is not null
+       and r.pin_y is not null`,
+    [planId, beaconKeyFilter ?? null],
+  );
+
+  return rows.map((r) => ({
+    receiverId: r.receiver_id,
+    receiverName: r.receiver_name,
+    pinX: num(r.pin_x),
+    pinY: num(r.pin_y),
+    beaconKey: r.beacon_key,
+    label: r.label,
+    uuid: r.uuid,
+    major: Number(r.major),
+    minor: Number(r.minor),
+    distanceMeters: num(r.distance_meters),
+    rssi: r.rssi == null ? null : Number(r.rssi),
+    recordedAt: asIso(r.recorded_at),
+  }));
+}
+
+function buildLocateFixes(
+  sightings: ReceiverSighting[],
+  widthMeters: number,
+): LocateFix[] {
+  const byBeacon = new Map<string, ReceiverSighting[]>();
+  for (const s of sightings) {
+    const group = byBeacon.get(s.beaconKey);
+    if (group) group.push(s);
+    else byBeacon.set(s.beaconKey, [s]);
+  }
+  const fixes: LocateFix[] = [];
+  for (const [key, group] of byBeacon) {
+    if (group.length < 1) continue;
+    const anchors = group.map((s) => ({
+      x: s.pinX,
+      y: s.pinY,
+      radius: metersToNormalized(s.distanceMeters, widthMeters),
+    }));
+    let point = estimate(anchors);
+    if (!point && group.length === 1) {
+      // Single receiver: place on a default ray southeast of the pin.
+      const s = group[0]!;
+      const r = metersToNormalized(s.distanceMeters, widthMeters);
+      point = {
+        x: clamp01(s.pinX + r * 0.7),
+        y: clamp01(s.pinY + r * 0.7),
+      };
+    }
+    if (!point) continue;
+    fixes.push({
+      beaconKey: key,
+      label: group[0]!.label,
+      x: point.x,
+      y: point.y,
+      confidence: Math.min(1, group.length / 3),
+      usedReceiverCount: group.length,
+      sightings: group,
+    });
+  }
+  return fixes;
+}
+
+async function upsertLocatedBeacon(
+  planId: string,
+  fix: LocateFix,
+  tracked = true,
+): Promise<void> {
+  const sample = fix.sightings[0]!;
+  const existing = await sql<{ id: string; x: number; y: number }>(
+    `select id, x, y from placed_beacons
+     where plan_id = $1 and uuid = $2 and major = $3 and minor = $4
+     limit 1`,
+    [planId, sample.uuid, sample.major, sample.minor],
+  );
+  const id = existing[0]?.id ?? crypto.randomUUID();
+  if (existing[0]) {
+    await sql(
+      `update placed_beacons
+       set label = $2, x = $3, y = $4, tracked = $5, updated_at = now()
+       where id = $1`,
+      [id, fix.label, fix.x, fix.y, tracked],
+    );
+  } else {
+    await sql(
+      `insert into placed_beacons(id, plan_id, label, uuid, major, minor, x, y, tracked)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        id,
+        planId,
+        fix.label,
+        sample.uuid,
+        sample.major,
+        sample.minor,
+        fix.x,
+        fix.y,
+        tracked,
+      ],
+    );
+  }
+
+  const last = await sql<{ x: number; y: number }>(
+    `select x, y from track_points
+     where plan_id = $1 and beacon_key = $2
+     order by recorded_at desc limit 1`,
+    [planId, fix.beaconKey],
+  );
+  const lastX = last[0] ? num(last[0].x) : null;
+  const lastY = last[0] ? num(last[0].y) : null;
+  const moved =
+    lastX == null ||
+    lastY == null ||
+    Math.hypot(fix.x - lastX, fix.y - lastY) >= 0.008;
+  if (moved) {
+    const avgDistance =
+      fix.sightings.reduce((s, g) => s + g.distanceMeters, 0) / fix.sightings.length;
+    await sql(
+      `insert into track_points(
+         plan_id, beacon_key, label, x, y, distance_meters, rssi, confidence
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        planId,
+        fix.beaconKey,
+        fix.label,
+        fix.x,
+        fix.y,
+        avgDistance,
+        sample.rssi,
+        fix.confidence,
+      ],
+    );
+  }
+}
+
+/** Recompute beacon positions from pinned receivers + latest distances. */
+export async function locateBeaconsFromSightings(planId: string): Promise<LocateFix[]> {
+  const plans = await listFloorPlans();
+  const plan = plans.find((p) => p.id === planId);
+  if (!plan) return [];
+  const sightings = await listLatestSightings(planId);
+  const fixes = buildLocateFixes(sightings, plan.widthMeters);
+  for (const fix of fixes) {
+    if (fix.usedReceiverCount >= 1) {
+      await upsertLocatedBeacon(planId, fix, true);
+    }
+  }
+  return fixes;
+}
+
 export async function getDashboardState(selectedPlanId?: string | null): Promise<DashboardState> {
   const plans = await listFloorPlans();
-  const planId = selectedPlanId && plans.some((p) => p.id === selectedPlanId)
-    ? selectedPlanId
-    : plans[0]?.id ?? null;
+  const planId =
+    selectedPlanId && plans.some((p) => p.id === selectedPlanId)
+      ? selectedPlanId
+      : (plans[0]?.id ?? null);
   const token = await getIngestToken();
+  const sightings = planId ? await listLatestSightings(planId) : [];
+  const width = plans.find((p) => p.id === planId)?.widthMeters ?? 20;
   return {
     floorPlans: plans,
     selectedPlanId: planId,
@@ -233,6 +438,8 @@ export async function getDashboardState(selectedPlanId?: string | null): Promise
     receivers: await listReceivers(planId),
     paths: planId ? await listPaths(planId) : {},
     latestScans: await latestScans(),
+    sightings,
+    locateFixes: buildLocateFixes(sightings, width),
     ingestHint: token,
     sampleMode: isSampleMode(),
     updatedAt: new Date().toISOString(),
@@ -252,6 +459,65 @@ export async function clearPath(planId: string, beaconKeyValue: string) {
   await broadcast(planId);
 }
 
+export async function upsertReceiverPin(input: {
+  id?: string;
+  name: string;
+  planId: string;
+  pinX: number;
+  pinY: number;
+}): Promise<Receiver> {
+  const id = input.id?.trim() || crypto.randomUUID();
+  await sql(
+    `insert into receivers(id, name, plan_id, pin_x, pin_y, last_seen_at)
+     values ($1, $2, $3, $4, $5, now())
+     on conflict (id) do update set
+       name = excluded.name,
+       plan_id = excluded.plan_id,
+       pin_x = excluded.pin_x,
+       pin_y = excluded.pin_y,
+       last_seen_at = now()`,
+    [id, input.name.trim() || "Receiver", input.planId, clamp01(input.pinX), clamp01(input.pinY)],
+  );
+  await locateBeaconsFromSightings(input.planId);
+  await broadcast(input.planId);
+  const receivers = await listReceivers(input.planId);
+  return receivers.find((r) => r.id === id)!;
+}
+
+export async function recordManualSighting(input: {
+  planId: string;
+  receiverId: string;
+  uuid: string;
+  major: number;
+  minor: number;
+  label?: string;
+  distanceMeters: number;
+  rssi?: number | null;
+}): Promise<DashboardState> {
+  const uuid = input.uuid.toUpperCase();
+  const key = beaconKey(uuid, input.major, input.minor);
+  const label = input.label?.trim() || `Beacon ${input.major}/${input.minor}`;
+  await sql(
+    `insert into sightings(
+       plan_id, receiver_id, beacon_key, label, uuid, major, minor, distance_meters, rssi
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [
+      input.planId,
+      input.receiverId,
+      key,
+      label,
+      uuid,
+      input.major,
+      input.minor,
+      input.distanceMeters,
+      input.rssi ?? null,
+    ],
+  );
+  await locateBeaconsFromSightings(input.planId);
+  await broadcast(input.planId);
+  return getDashboardState(input.planId);
+}
+
 type IngestBody = {
   source?: string;
   event?: string;
@@ -265,39 +531,8 @@ type IngestBody = {
   beacons?: Array<Record<string, unknown>>;
 };
 
-function clamp01(n: number): number {
-  return Math.min(0.98, Math.max(0.02, n));
-}
-
-export async function ingestPayload(body: IngestBody): Promise<{ ok: true; planId: string | null }> {
-  const event = body.event ?? "beacon_scan";
-  const receiverId = body.receiverId?.trim() || "anonymous";
-  const receiverName = body.receiverName?.trim() || "Receiver";
-
-  if (event === "beacon_scan") {
-    await sql(
-      `insert into scan_snapshots(source, receiver_id, payload) values ($1, $2, $3::jsonb)`,
-      [
-        body.source ?? "beacon-simulator",
-        receiverId,
-        JSON.stringify({
-          timestampMs: body.timestampMs ?? Date.now(),
-          beacons: body.beacons ?? [],
-        }),
-      ],
-    );
-    await sql(
-      `insert into receivers(id, name, last_seen_at)
-       values ($1, $2, now())
-       on conflict (id) do update set name = excluded.name, last_seen_at = now()`,
-      [receiverId, receiverName],
-    );
-    await broadcast();
-    return { ok: true, planId: null };
-  }
-
-  // beacon_location (or legacy aliases)
-  let planId = body.planId?.trim() || null;
+async function ensurePlanFromBody(body: IngestBody): Promise<string> {
+  const planId = body.planId?.trim() || null;
   if (planId) {
     const found = await sql<{ id: string }>(`select id from floor_plans where id = $1`, [planId]);
     if (!found[0]) {
@@ -315,35 +550,108 @@ export async function ingestPayload(body: IngestBody): Promise<{ ok: true; planI
         [planId, body.planName ?? "", body.planWidthMeters ?? null],
       );
     }
-  } else {
-    planId = (await ensureDefaultPlan()).id;
+    return planId;
   }
+  return (await ensureDefaultPlan()).id;
+}
 
-  const pinX = body.receiverPin?.x;
-  const pinY = body.receiverPin?.y;
+async function upsertReceiverFromIngest(
+  receiverId: string,
+  receiverName: string,
+  planId: string | null,
+  pinX: number | null,
+  pinY: number | null,
+) {
   await sql(
     `insert into receivers(id, name, plan_id, pin_x, pin_y, last_seen_at)
      values ($1, $2, $3, $4, $5, now())
      on conflict (id) do update set
        name = excluded.name,
-       plan_id = excluded.plan_id,
+       plan_id = coalesce(excluded.plan_id, receivers.plan_id),
        pin_x = coalesce(excluded.pin_x, receivers.pin_x),
        pin_y = coalesce(excluded.pin_y, receivers.pin_y),
        last_seen_at = now()`,
-    [
-      receiverId,
-      receiverName,
-      planId,
-      typeof pinX === "number" ? clamp01(pinX) : null,
-      typeof pinY === "number" ? clamp01(pinY) : null,
-    ],
+    [receiverId, receiverName, planId, pinX, pinY],
   );
+}
+
+async function insertSightingsFromBeacons(
+  planId: string,
+  receiverId: string,
+  beacons: Array<Record<string, unknown>>,
+) {
+  for (const raw of beacons) {
+    const uuid = String(raw.uuid ?? "").toUpperCase();
+    const major = Number(raw.major);
+    const minor = Number(raw.minor);
+    const distanceMeters =
+      raw.distanceMeters == null ? null : num(raw.distanceMeters);
+    if (!uuid || !Number.isFinite(major) || !Number.isFinite(minor)) continue;
+    if (distanceMeters == null || distanceMeters <= 0) continue;
+    const label = String(raw.label ?? `Beacon ${major}/${minor}`);
+    await sql(
+      `insert into sightings(
+         plan_id, receiver_id, beacon_key, label, uuid, major, minor, distance_meters, rssi
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        planId,
+        receiverId,
+        beaconKey(uuid, major, minor),
+        label,
+        uuid,
+        major,
+        minor,
+        distanceMeters,
+        raw.rssi == null ? null : Number(raw.rssi),
+      ],
+    );
+  }
+}
+
+export async function ingestPayload(body: IngestBody): Promise<{ ok: true; planId: string | null }> {
+  const event = body.event ?? "beacon_scan";
+  const receiverId = body.receiverId?.trim() || "anonymous";
+  const receiverName = body.receiverName?.trim() || "Receiver";
+  const pinX = typeof body.receiverPin?.x === "number" ? clamp01(body.receiverPin.x) : null;
+  const pinY = typeof body.receiverPin?.y === "number" ? clamp01(body.receiverPin.y) : null;
+
+  if (event === "beacon_scan") {
+    const planId = body.planId?.trim()
+      ? await ensurePlanFromBody(body)
+      : (await listReceivers(null)).find((r) => r.id === receiverId)?.planId ??
+        (await ensureDefaultPlan()).id;
+
+    await sql(
+      `insert into scan_snapshots(source, receiver_id, payload) values ($1, $2, $3::jsonb)`,
+      [
+        body.source ?? "beacon-simulator",
+        receiverId,
+        JSON.stringify({
+          timestampMs: body.timestampMs ?? Date.now(),
+          beacons: body.beacons ?? [],
+        }),
+      ],
+    );
+    await upsertReceiverFromIngest(receiverId, receiverName, planId, pinX, pinY);
+    await insertSightingsFromBeacons(planId, receiverId, body.beacons ?? []);
+    await locateBeaconsFromSightings(planId);
+    await broadcast(planId);
+    return { ok: true, planId };
+  }
+
+  // beacon_location
+  const planId = await ensurePlanFromBody(body);
+  await upsertReceiverFromIngest(receiverId, receiverName, planId, pinX, pinY);
+  await insertSightingsFromBeacons(planId, receiverId, body.beacons ?? []);
 
   for (const raw of body.beacons ?? []) {
     const uuid = String(raw.uuid ?? "").toUpperCase();
     const major = Number(raw.major);
     const minor = Number(raw.minor);
     if (!uuid || !Number.isFinite(major) || !Number.isFinite(minor)) continue;
+    // Prefer server multilateration when we already have 2+ pinned receivers.
+    // Still accept explicit x/y as a seed/fallback placement.
+    if (raw.x == null || raw.y == null) continue;
     const x = clamp01(num(raw.x, 0.5));
     const y = clamp01(num(raw.y, 0.5));
     const label = String(raw.label ?? `Beacon ${major}/${minor}`);
@@ -405,12 +713,19 @@ export async function ingestPayload(body: IngestBody): Promise<{ ok: true; planI
     }
   }
 
+  // Prefer multilateration from pinned receivers whenever enough sightings exist.
+  await locateBeaconsFromSightings(planId);
+
   await sql(
     `insert into scan_snapshots(source, receiver_id, payload) values ($1, $2, $3::jsonb)`,
     [
       body.source ?? "beacon-simulator",
       receiverId,
-      JSON.stringify({ event, timestampMs: body.timestampMs ?? Date.now(), beacons: body.beacons ?? [] }),
+      JSON.stringify({
+        event,
+        timestampMs: body.timestampMs ?? Date.now(),
+        beacons: body.beacons ?? [],
+      }),
     ],
   );
 
@@ -427,21 +742,10 @@ export async function seedDemo(): Promise<DashboardState> {
 
   await sql(`delete from placed_beacons where plan_id = $1`, [plan.id]);
   await sql(`delete from track_points where plan_id = $1`, [plan.id]);
+  await sql(`delete from sightings where plan_id = $1`, [plan.id]);
   await sql(`delete from receivers where plan_id = $1`, [plan.id]);
 
   const uuid = "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0";
-  const anchors = [
-    { label: "Anchor NE", major: 1, minor: 10, x: 0.82, y: 0.18, tracked: false },
-    { label: "Anchor SW", major: 1, minor: 11, x: 0.18, y: 0.78, tracked: false },
-    { label: "Transmitter 1", major: 1, minor: 1, x: 0.35, y: 0.42, tracked: true },
-  ];
-  for (const a of anchors) {
-    await sql(
-      `insert into placed_beacons(id, plan_id, label, uuid, major, minor, x, y, tracked)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [crypto.randomUUID(), plan.id, a.label, uuid, a.major, a.minor, a.x, a.y, a.tracked],
-    );
-  }
 
   await sql(
     `insert into receivers(id, name, plan_id, pin_x, pin_y, last_seen_at)
@@ -451,6 +755,17 @@ export async function seedDemo(): Promise<DashboardState> {
        pin_x = excluded.pin_x, pin_y = excluded.pin_y, last_seen_at = now()`,
     ["recv-a", "Phone A", plan.id, 0.22, 0.28, "recv-b", "Phone B", 0.74, 0.66],
   );
+
+  // Distances from each pinned receiver to the moving transmitter (~center-left).
+  await sql(
+    `insert into sightings(plan_id, receiver_id, beacon_key, label, uuid, major, minor, distance_meters, rssi)
+     values
+       ($1,'recv-a',$2,'Transmitter 1',$3,1,1,6.2,-61),
+       ($1,'recv-b',$2,'Transmitter 1',$3,1,1,9.4,-68)`,
+    [plan.id, beaconKey(uuid, 1, 1), uuid],
+  );
+
+  await locateBeaconsFromSightings(plan.id);
 
   const path: Array<[number, number]> = [
     [0.28, 0.55],
@@ -480,6 +795,14 @@ export async function seedDemo(): Promise<DashboardState> {
   }
 
   await sql(
+    `insert into placed_beacons(id, plan_id, label, uuid, major, minor, x, y, tracked)
+     values ($1,$2,'Anchor NE',$3,1,10,0.82,0.18,false),
+            ($4,$2,'Anchor SW',$3,1,11,0.18,0.78,false)
+     on conflict (id) do nothing`,
+    [crypto.randomUUID(), plan.id, uuid, crypto.randomUUID()],
+  );
+
+  await sql(
     `insert into scan_snapshots(source, receiver_id, payload) values ($1,$2,$3::jsonb)`,
     [
       "demo",
@@ -493,8 +816,8 @@ export async function seedDemo(): Promise<DashboardState> {
             minor: 1,
             rssi: -61,
             txPower: -59,
-            distanceMeters: 1.4,
-            proximity: "Near",
+            distanceMeters: 6.2,
+            proximity: "Far",
             deviceAddress: "AA:BB:CC:DD:EE:FF",
             lastSeenEpochMs: Date.now(),
           },

@@ -803,7 +803,16 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        when (val result = forwarder.postBeacons(url, current.scannedBeacons)) {
+        when (
+            val result = forwarder.postBeacons(
+                endpointUrl = url,
+                beacons = current.scannedBeacons,
+                receiverId = peerSync.localReceiverId,
+                receiverName = current.receiverDisplayName,
+                planId = current.selectedFloorPlanId,
+                receiverPin = current.receiverPin,
+            )
+        ) {
             is ForwardResult.Success -> {
                 _state.update {
                     it.copy(

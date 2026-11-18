@@ -1,21 +1,39 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DashboardState, PlacedBeacon, TrackPoint } from "@/lib/types";
+import type {
+  DashboardState,
+  MapTool,
+  PlacedBeacon,
+  ReceiverSighting,
+  TrackPoint,
+} from "@/lib/types";
 
 const PATH_COLORS = ["#f4b942", "#3ecf8e", "#5bb8ff", "#ff7a59", "#c084fc"];
 
 type Props = {
   state: DashboardState;
   selectedBeaconKey: string | null;
+  selectedReceiverId: string | null;
+  tool: MapTool;
   onSelectBeacon: (key: string) => void;
+  onSelectReceiver: (id: string) => void;
+  onMapClick: (x: number, y: number) => void;
 };
 
 function keyOf(b: PlacedBeacon) {
   return `${b.uuid.toUpperCase()}|${b.major}|${b.minor}`;
 }
 
-export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
+export function FloorMap({
+  state,
+  selectedBeaconKey,
+  selectedReceiverId,
+  tool,
+  onSelectBeacon,
+  onSelectReceiver,
+  onMapClick,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 520 });
   const plan = state.floorPlans.find((p) => p.id === state.selectedPlanId) ?? null;
@@ -33,6 +51,22 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
 
   const pathEntries = useMemo(() => Object.entries(state.paths), [state.paths]);
 
+  const activeSightings = useMemo(() => {
+    if (!selectedBeaconKey) return [] as ReceiverSighting[];
+    return state.sightings.filter((s) => s.beaconKey === selectedBeaconKey);
+  }, [selectedBeaconKey, state.sightings]);
+
+  const widthMeters = plan?.widthMeters ?? 20;
+
+  function handleClick(e: React.MouseEvent<SVGSVGElement>) {
+    if (tool !== "pin" && tool !== "locate") return;
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    onMapClick(Math.min(0.98, Math.max(0.02, x)), Math.min(0.98, Math.max(0.02, y)));
+  }
+
   return (
     <div ref={wrapRef} className="map-shell">
       <svg
@@ -41,16 +75,13 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
         height={size.h}
         role="img"
         aria-label="Floor plan tracking map"
-        className="map-svg"
+        className={`map-svg tool-${tool}`}
+        onClick={handleClick}
       >
         <defs>
           <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
             <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(232,224,208,0.08)" strokeWidth="1" />
           </pattern>
-          <linearGradient id="trailFade" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#f4b942" stopOpacity="0.15" />
-            <stop offset="100%" stopColor="#f4b942" stopOpacity="0.95" />
-          </linearGradient>
           <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
             <feGaussianBlur stdDeviation="2.5" result="blur" />
             <feMerge>
@@ -87,6 +118,32 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
           </>
         )}
 
+        {tool === "locate" &&
+          activeSightings.map((s) => {
+            const cx = s.pinX * size.w;
+            const cy = s.pinY * size.h;
+            const rNorm = Math.min(1.2, Math.max(0.02, s.distanceMeters / widthMeters));
+            const rx = rNorm * size.w;
+            const ry = rNorm * size.h;
+            return (
+              <g key={`ring-${s.receiverId}-${s.beaconKey}`} className="range-ring">
+                <ellipse
+                  cx={cx}
+                  cy={cy}
+                  rx={rx}
+                  ry={ry}
+                  fill="rgba(91,184,255,0.08)"
+                  stroke="#5bb8ff"
+                  strokeWidth={1.5}
+                  strokeDasharray="6 5"
+                />
+                <text x={cx + 8} y={cy + ry * 0.55} className="map-label muted">
+                  {s.receiverName}: {s.distanceMeters.toFixed(1)} m
+                </text>
+              </g>
+            );
+          })}
+
         {pathEntries.map(([key, points], idx) => (
           <PathTrail
             key={key}
@@ -103,11 +160,32 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
           .map((r) => {
             const cx = (r.pinX as number) * size.w;
             const cy = (r.pinY as number) * size.h;
+            const selected = selectedReceiverId === r.id;
             return (
-              <g key={r.id} className="receiver-pin">
-                <circle cx={cx} cy={cy} r={10} fill="none" stroke="#5bb8ff" strokeWidth={2} opacity={0.9}>
-                  <animate attributeName="r" values="8;14;8" dur="2.4s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.9;0.25;0.9" dur="2.4s" repeatCount="indefinite" />
+              <g
+                key={r.id}
+                className="receiver-pin"
+                style={{ cursor: "pointer" }}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  onSelectReceiver(r.id);
+                }}
+              >
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={selected ? 14 : 10}
+                  fill="none"
+                  stroke="#5bb8ff"
+                  strokeWidth={selected ? 2.5 : 2}
+                  opacity={0.9}
+                >
+                  {!selected && (
+                    <>
+                      <animate attributeName="r" values="8;14;8" dur="2.4s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.9;0.25;0.9" dur="2.4s" repeatCount="indefinite" />
+                    </>
+                  )}
                 </circle>
                 <circle cx={cx} cy={cy} r={5} fill="#5bb8ff" />
                 <text x={cx + 10} y={cy - 10} className="map-label">
@@ -127,11 +205,21 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
               key={b.id}
               className={b.tracked ? "beacon tracked" : "beacon fixed"}
               style={{ cursor: "pointer" }}
-              onClick={() => onSelectBeacon(key)}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onSelectBeacon(key);
+              }}
             >
               {b.tracked ? (
                 <>
-                  <circle cx={cx} cy={cy} r={selected ? 18 : 14} fill="#f4b942" opacity={0.18} filter="url(#softGlow)">
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={selected ? 18 : 14}
+                    fill="#f4b942"
+                    opacity={0.18}
+                    filter="url(#softGlow)"
+                  >
                     <animate attributeName="r" values="12;20;12" dur="1.8s" repeatCount="indefinite" />
                   </circle>
                   <path
@@ -142,18 +230,16 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
                   />
                 </>
               ) : (
-                <>
-                  <rect
-                    x={cx - 7}
-                    y={cy - 7}
-                    width={14}
-                    height={14}
-                    rx={2}
-                    fill="#3ecf8e"
-                    stroke="#0d1a14"
-                    strokeWidth={1.5}
-                  />
-                </>
+                <rect
+                  x={cx - 7}
+                  y={cy - 7}
+                  width={14}
+                  height={14}
+                  rx={2}
+                  fill="#3ecf8e"
+                  stroke="#0d1a14"
+                  strokeWidth={1.5}
+                />
               )}
               <text x={cx + 12} y={cy + 4} className="map-label">
                 {b.label}
@@ -162,14 +248,11 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
           );
         })}
 
-        {!state.beacons.length && (
-          <text
-            x={size.w / 2}
-            y={size.h / 2}
-            textAnchor="middle"
-            className="map-empty"
-          >
-            Waiting for beacon locations…
+        {!state.beacons.length && !state.receivers.some((r) => r.pinX != null) && (
+          <text x={size.w / 2} y={size.h / 2} textAnchor="middle" className="map-empty">
+            {tool === "pin"
+              ? "Click the map to pin the first receiver"
+              : "Pin receivers first, then locate beacons"}
           </text>
         )}
       </svg>
@@ -178,7 +261,16 @@ export function FloorMap({ state, selectedBeaconKey, onSelectBeacon }: Props) {
         <span><i className="swatch fixed" /> Fixed beacon</span>
         <span><i className="swatch receiver" /> Receiver pin</span>
         <span><i className="swatch path" /> Movement path</span>
+        <span><i className="swatch ring" /> Range from receiver</span>
       </div>
+      {tool === "pin" && (
+        <p className="map-hint">Pin mode — select a receiver, then click the floor to place it</p>
+      )}
+      {tool === "locate" && (
+        <p className="map-hint">
+          Locate mode — range rings show distance from each pinned receiver to the selected beacon
+        </p>
+      )}
     </div>
   );
 }

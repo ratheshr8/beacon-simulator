@@ -27,9 +27,11 @@ Live UI updates over `GET /api/stream` (SSE).
 
 ## Features
 
+- **Pin receivers first**, then locate each beacon from per-receiver distances
+- Multilateration on the server from pinned receivers + sightings
+- Range rings in Locate mode
 - Floor plan create / select / image upload
 - Live beacon markers (fixed + tracked transmitter)
-- Receiver pins
-- Movement path trails with path length
+- Movement path / route details (length, segments, per-receiver distances)
 - Latest RSSI/distance snapshot
 - Optional Postgres via `cursor-app.json` + `DATABASE_URL` (local uses PGlite)

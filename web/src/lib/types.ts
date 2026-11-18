@@ -56,6 +56,34 @@ export type BeaconScan = {
   lastSeenEpochMs: number | null;
 };
 
+/** Latest distance from one pinned receiver to a beacon. */
+export type ReceiverSighting = {
+  receiverId: string;
+  receiverName: string;
+  pinX: number;
+  pinY: number;
+  beaconKey: string;
+  label: string;
+  uuid: string;
+  major: number;
+  minor: number;
+  distanceMeters: number;
+  rssi: number | null;
+  recordedAt: string;
+};
+
+export type LocateFix = {
+  beaconKey: string;
+  label: string;
+  x: number;
+  y: number;
+  confidence: number;
+  usedReceiverCount: number;
+  sightings: ReceiverSighting[];
+};
+
+export type MapTool = "view" | "pin" | "locate";
+
 export type DashboardState = {
   floorPlans: FloorPlan[];
   selectedPlanId: string | null;
@@ -63,6 +91,8 @@ export type DashboardState = {
   receivers: Receiver[];
   paths: Record<string, TrackPoint[]>;
   latestScans: BeaconScan[];
+  sightings: ReceiverSighting[];
+  locateFixes: LocateFix[];
   ingestHint: string;
   sampleMode: boolean;
   updatedAt: string;

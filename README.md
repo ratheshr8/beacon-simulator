@@ -81,13 +81,17 @@ Next.js app that receives receiver webhooks and plots live beacon positions + mo
 
 ```bash
 cd web
+cp .env.example .env.local   # optional
 npm install
 npm run dev
 ```
 
-Open the shown URL, copy the **ingest URL** (includes `?token=`), paste it into the Android Receiver webhook field, enable forwarding, and enable floor-plan live-move. The map updates over SSE.
+**Locate workflow on Floorcast:**
+1. **Pin receivers** on the floor plan first (map tool → Pin receivers).
+2. **Locate beacons** from each receiver’s distance (map tool → Locate, or live Android scans).
+3. With 2+ pinned receivers, Floorcast multilaterates the beacon and updates **route details**.
 
-Also accepts `event: "beacon_location"` payloads with normalized `x`/`y` (0..1), receiver pins, and plan metadata — emitted automatically by Beacon Simulator **v1.5.0+** when forwarding is on.
+Copy the **ingest URL** (includes `?token=`), paste it into the Android Receiver webhook field, enable forwarding, and pin each phone. Android **v1.5.1+** includes `receiverId` / pin on scan posts so web locate works per phone.
 
 ### QR pairing (recommended)
 

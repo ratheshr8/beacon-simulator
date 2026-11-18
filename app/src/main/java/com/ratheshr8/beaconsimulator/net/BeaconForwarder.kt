@@ -58,9 +58,26 @@ data class LocationBeaconPayload(
  * }
  */
 class BeaconForwarder {
-    suspend fun postBeacons(endpointUrl: String, beacons: List<ScannedBeacon>): ForwardResult {
+    suspend fun postBeacons(
+        endpointUrl: String,
+        beacons: List<ScannedBeacon>,
+        receiverId: String? = null,
+        receiverName: String? = null,
+        planId: String? = null,
+        receiverPin: Point2d? = null,
+    ): ForwardResult {
         validateUrl(endpointUrl)?.let { return it }
-        return postJson(endpointUrl, buildScanPayload(beacons), beacons.size)
+        return postJson(
+            endpointUrl,
+            buildScanPayload(
+                beacons = beacons,
+                receiverId = receiverId,
+                receiverName = receiverName,
+                planId = planId,
+                receiverPin = receiverPin,
+            ),
+            beacons.size,
+        )
     }
 
     suspend fun postLocations(
@@ -148,7 +165,13 @@ class BeaconForwarder {
             }
         }
 
-    private fun buildScanPayload(beacons: List<ScannedBeacon>): JSONObject {
+    private fun buildScanPayload(
+        beacons: List<ScannedBeacon>,
+        receiverId: String?,
+        receiverName: String?,
+        planId: String?,
+        receiverPin: Point2d?,
+    ): JSONObject {
         val array = JSONArray()
         beacons.forEach { beacon ->
             array.put(
@@ -168,10 +191,21 @@ class BeaconForwarder {
                     .put("lastSeenEpochMs", beacon.lastSeenEpochMs),
             )
         }
+        val pin = if (receiverPin != null) {
+            JSONObject()
+                .put("x", Math.round(receiverPin.x * 10000.0) / 10000.0)
+                .put("y", Math.round(receiverPin.y * 10000.0) / 10000.0)
+        } else {
+            JSONObject.NULL
+        }
         return JSONObject()
             .put("source", "beacon-simulator")
             .put("event", "beacon_scan")
             .put("timestampMs", System.currentTimeMillis())
+            .put("receiverId", receiverId ?: JSONObject.NULL)
+            .put("receiverName", receiverName ?: JSONObject.NULL)
+            .put("planId", planId ?: JSONObject.NULL)
+            .put("receiverPin", pin)
             .put("beacons", array)
     }
 
